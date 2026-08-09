@@ -1,0 +1,50 @@
+// 时间与状态展示工具：后端返回 UTC ISO 时间，统一转浏览器本地时区显示
+
+export function formatTime(iso) {
+  if (!iso) return '—'
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return '—'
+  return d.toLocaleString()
+}
+
+// 耗时展示：duration_sec（秒，可能为 null）
+export function formatDuration(sec) {
+  if (sec === null || sec === undefined) return '—'
+  return humanizeSeconds(sec)
+}
+
+// 从某 UTC 时间起到 now 的已用时长（运行中/排队中任务用）
+export function elapsedSince(iso, now = new Date()) {
+  if (!iso) return '—'
+  const start = new Date(iso)
+  if (Number.isNaN(start.getTime())) return '—'
+  const sec = Math.max(0, (now.getTime() - start.getTime()) / 1000)
+  return humanizeSeconds(sec)
+}
+
+function humanizeSeconds(sec) {
+  if (sec < 60) return `${sec.toFixed(1)} 秒`
+  const m = Math.floor(sec / 60)
+  const s = Math.round(sec % 60)
+  if (m < 60) return `${m} 分 ${s} 秒`
+  const h = Math.floor(m / 60)
+  return `${h} 小时 ${m % 60} 分`
+}
+
+export const TASK_STATUS = {
+  QUEUED: { label: '排队中', type: 'warning' },
+  RUNNING: { label: '运行中', type: 'primary' },
+  COMPLETED: { label: '已完成', type: 'success' },
+  FAILED: { label: '失败', type: 'danger' },
+  CANCELED: { label: '已取消', type: 'info' },
+}
+
+export function isActiveStatus(status) {
+  return status === 'QUEUED' || status === 'RUNNING'
+}
+
+export const NOTIFICATION_TYPE = {
+  completed: { label: '完成', type: 'success' },
+  failed: { label: '失败', type: 'danger' },
+  killed: { label: '终止', type: 'warning' },
+}

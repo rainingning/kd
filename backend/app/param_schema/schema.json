@@ -1,0 +1,49 @@
+{
+  "format": "json",
+  "_comment": "占位参数集：真实参数清单与文件格式待实验室提供（需求说明书 7.2，研发任务分解 T0.1）。format=json 供 Mock 程序使用；拿到真实格式后在 serializer 中实现对应格式。",
+  "fields": [
+    {
+      "name": "grid_size",
+      "type": "int",
+      "required": true,
+      "min": 1,
+      "max": 1000000,
+      "description": "网格规模（占位参数）"
+    },
+    {
+      "name": "time_step",
+      "type": "float",
+      "required": false,
+      "default": 0.01,
+      "min": 0,
+      "description": "时间步长（占位参数）"
+    },
+    {
+      "name": "method",
+      "type": "enum",
+      "options": ["explicit", "implicit"],
+      "default": "explicit",
+      "description": "求解方法（占位参数）"
+    },
+    {
+      "name": "enable_output",
+      "type": "bool",
+      "default": true,
+      "description": "是否输出中间结果（占位参数）"
+    },
+    {
+      "name": "mock_sleep",
+      "type": "float",
+      "default": 1,
+      "min": 0,
+      "description": "【仅 Mock 有效】模拟计算耗时秒数"
+    },
+    {
+      "name": "mock_exit_code",
+      "type": "int",
+      "default": 0,
+      "min": 0,
+      "description": "【仅 Mock 有效】模拟进程退出码"
+    }
+  ]
+}

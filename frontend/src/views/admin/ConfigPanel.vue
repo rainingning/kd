@@ -1,11 +1,18 @@
 <template>
   <div v-loading="loading" class="config-pane">
     <el-alert type="info" :closable="false" class="tip-alert">
-      仅提交修改过的配置项；所有配置必须为正数。
+      仅提交修改过的配置项；所有配置必须为正整数。同一用户固定工作区运行上限固定为 1。
     </el-alert>
     <el-form label-width="220px" class="config-form" @submit.prevent>
       <el-form-item v-for="item in CONFIG_ITEMS" :key="item.key" :label="item.label">
-        <el-input-number v-model="form[item.key]" :min="item.min" :precision="0" controls-position="right" style="width: 200px" />
+        <el-input-number
+          v-model="form[item.key]"
+          :min="item.min"
+          :precision="0"
+          :disabled="item.readonly"
+          controls-position="right"
+          style="width: 200px"
+        />
         <span class="unit">{{ item.unit }}</span>
       </el-form-item>
       <el-form-item>
@@ -25,11 +32,12 @@ import { adminApi } from '../../api/admin'
 
 const CONFIG_ITEMS = [
   { key: 'max_concurrent_tasks', label: '全局最大并发任务数', unit: '个', min: 1 },
-  { key: 'max_running_per_user', label: '每用户最大运行任务数', unit: '个', min: 1 },
+  { key: 'max_running_per_user', label: '每用户最大运行任务数（固定）', unit: '个', min: 1, readonly: true },
   { key: 'max_queued_per_user', label: '每用户最大排队任务数', unit: '个', min: 1 },
   { key: 'task_timeout_minutes', label: '任务超时时间', unit: '分钟', min: 1 },
   { key: 'retention_days', label: '结果文件保留天数', unit: '天', min: 1 },
   { key: 'max_upload_mb', label: '上传文件大小上限', unit: 'MB', min: 1 },
+  { key: 'min_free_disk_mb', label: '任务启动最小剩余磁盘', unit: 'MB', min: 1 },
 ]
 
 const loading = ref(false)
@@ -59,15 +67,16 @@ function resetForm() {
 }
 
 const hasChanges = computed(() =>
-  CONFIG_ITEMS.some((item) => String(form[item.key]) !== original.value[item.key]),
+  CONFIG_ITEMS.some((item) => !item.readonly && String(form[item.key]) !== original.value[item.key]),
 )
 
 async function onSave() {
   const changed = {}
   for (const item of CONFIG_ITEMS) {
+    if (item.readonly) continue
     const v = form[item.key]
-    if (v === undefined || v === null || !Number.isFinite(v) || v <= 0) {
-      ElMessage.warning(`${item.label}：必须为正数`)
+    if (v === undefined || v === null || !Number.isFinite(v) || v <= 0 || !Number.isInteger(v)) {
+      ElMessage.warning(`${item.label}：必须为正整数`)
       return
     }
     if (String(v) !== original.value[item.key]) changed[item.key] = String(v)

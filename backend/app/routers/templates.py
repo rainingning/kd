@@ -31,7 +31,7 @@ def _validate_or_422(params: dict) -> dict:
     try:
         return validate_params(params)
     except ParamValidationError as e:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=e.errors)
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=e.errors)
 
 
 @router.get("", response_model=list[TemplateResponse])

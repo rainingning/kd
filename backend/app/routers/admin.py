@@ -3,29 +3,32 @@
 仪表盘统计、任务监控与终止、用户管理、系统参数配置、审计日志。
 全部接口要求管理员权限（路由级依赖 require_admin）。
 """
+import asyncio
+import math
 import secrets
-import shutil
 
 import psutil
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from .. import db
 from ..config import settings
 from ..db import get_session
 from ..deps import require_admin
 from ..models import (
+    ACTIVE_WORKSPACE_STATUSES,
     DEFAULT_CONFIG,
     AuditLog,
-    NotificationType,
     SystemConfig,
     Task,
     TaskStatus,
     User,
     UserStatus,
+    WorkspaceStatus,
     utcnow,
 )
-from ..scheduler.runner import request_cancel
+from ..scheduler.runner import finalize_task, recover_task, request_cancel
 from ..schemas import (
     AdminTaskItem,
     AdminUserCreate,
@@ -42,7 +45,11 @@ from ..schemas import (
 from ..security import hash_password
 from ..services.audit import audit
 from ..services.config import get_config_map
-from ..services.notifications import notify
+from ..services.program_sync import sync_user_program
+from ..services.program_template import ProgramTemplateError, validate_program_template
+from ..services.workspace import (
+    WorkspaceError, check_workspace, initialize_workspace, remove_workspace,
+)
 
 router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(require_admin)])
 
@@ -52,12 +59,14 @@ router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(re
 @router.get("/dashboard", response_model=DashboardResponse)
 async def dashboard(session: AsyncSession = Depends(get_session)):
     total_users = await session.scalar(select(func.count(User.id)))
+    monitored_statuses = (TaskStatus.PREPARING, TaskStatus.RUNNING, TaskStatus.ARCHIVING)
     running_tasks = await session.scalar(
-        select(func.count(Task.id)).where(Task.status == TaskStatus.RUNNING))
+        select(func.count(Task.id)).where(Task.status.in_(monitored_statuses)))
     queued_tasks = await session.scalar(
         select(func.count(Task.id)).where(Task.status == TaskStatus.QUEUED))
     active_users = await session.scalar(
-        select(func.count(func.distinct(Task.user_id))).where(Task.status == TaskStatus.RUNNING))
+        select(func.count(func.distinct(Task.user_id))).where(
+            Task.status.in_(monitored_statuses)))
     mem = psutil.virtual_memory()
     disk = psutil.disk_usage(str(settings.storage_root.resolve()))
     return DashboardResponse(
@@ -73,11 +82,15 @@ async def dashboard(session: AsyncSession = Depends(get_session)):
 
 # ---- T6.2 任务监控与终止 ----
 
-async def _task_items(session: AsyncSession, status_: str) -> list[AdminTaskItem]:
+async def _task_items(session: AsyncSession, statuses: str | tuple[str, ...]) -> list[AdminTaskItem]:
+    status_filter = (
+        Task.status.in_(statuses) if isinstance(statuses, tuple)
+        else Task.status == statuses
+    )
     rows = (await session.execute(
         select(Task, User.username)
         .join(User, Task.user_id == User.id)
-        .where(Task.status == status_)
+        .where(status_filter)
         .order_by(Task.queued_at)
     )).all()
     return [
@@ -91,7 +104,9 @@ async def _task_items(session: AsyncSession, status_: str) -> list[AdminTaskItem
 
 @router.get("/tasks/running", response_model=list[AdminTaskItem])
 async def list_running_tasks(session: AsyncSession = Depends(get_session)):
-    return await _task_items(session, TaskStatus.RUNNING)
+    return await _task_items(session, (
+        TaskStatus.PREPARING, TaskStatus.RUNNING, TaskStatus.ARCHIVING,
+    ))
 
 
 @router.get("/tasks/queued", response_model=list[AdminTaskItem])
@@ -106,23 +121,32 @@ async def kill_task(
     session: AsyncSession = Depends(get_session),
 ):
     task = await session.get(Task, task_id)
-    if task is None or task.status not in (TaskStatus.QUEUED, TaskStatus.RUNNING):
-        raise HTTPException(status.HTTP_409_CONFLICT, "任务不在运行或排队中")
+    if task is None or task.status not in (
+        TaskStatus.QUEUED, TaskStatus.PREPARING, TaskStatus.RUNNING,
+    ):
+        raise HTTPException(status.HTTP_409_CONFLICT, "任务不在准备、运行或排队中")
 
-    if task.status == TaskStatus.RUNNING and request_cancel(task_id, kind="admin"):
-        # runner 负责落终态 FAILED 并通知用户
-        audit(session, admin.id, "task.kill", target=f"task#{task_id}", detail={"via": "process"})
+    if task.status in (TaskStatus.PREPARING, TaskStatus.RUNNING):
+        process_signaled = request_cancel(task_id, kind="admin")
+        # 无论进程是否已注册，runner 都会在启动前竞态检查或进程退出后归档。
+        audit(session, admin.id, "task.kill", target=f"task#{task_id}", detail={
+            "via": "process" if process_signaled else "prelaunch_request",
+        })
         await session.commit()
-        return {"detail": "已发送终止指令"}
+        return {"detail": "已记录终止指令"}
 
-    # QUEUED 或进程注册表竞态：直接落终态
-    task.status = TaskStatus.FAILED
-    task.error_message = "被管理员终止"
-    task.finished_at = utcnow()
-    notify(session, task, NotificationType.KILLED, f"任务 #{task.id} 已被管理员终止")
-    audit(session, admin.id, "task.kill", target=f"task#{task_id}", detail={"via": "direct"})
+    # 排队任务从 staging 直接归档，不触碰用户固定工作区。
+    audit(session, admin.id, "task.kill", target=f"task#{task_id}", detail={"via": "queued"})
     await session.commit()
-    return {"detail": "已终止"}
+    archived = await finalize_task(
+        task_id,
+        final_status=TaskStatus.FAILED,
+        reason="被管理员终止",
+        workspace_was_used=False,
+    )
+    if not archived:
+        return {"detail": "任务已终止，但归档失败，等待管理员重试"}
+    return {"detail": "已终止并归档"}
 
 
 # ---- T6.3 用户管理 ----
@@ -161,8 +185,23 @@ async def create_user(
     )
     session.add(user)
     await session.flush()
+    try:
+        manifest = await asyncio.to_thread(initialize_workspace, user.id)
+    except WorkspaceError as exc:
+        await session.rollback()
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            f"用户工作区初始化失败：{exc}",
+        ) from exc
+    user.workspace_status = WorkspaceStatus.READY
+    user.workspace_error = None
+    user.program_version = manifest.version
+    user.exe_sha256 = manifest.exe_sha256
+    user.dll_sha256 = manifest.dll_sha256
+    user.program_synced_at = utcnow()
     audit(session, admin.id, "user.create", target=user.username,
-          detail={"user_id": user.id, "role": user.role})
+          detail={"user_id": user.id, "role": user.role,
+                  "program_version": manifest.version})
     await session.commit()
     return user
 
@@ -215,14 +254,20 @@ async def delete_user(
     if target.id == admin.id:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "不能删除自己")
 
-    running = await session.scalar(
+    active = await session.scalar(
         select(func.count(Task.id))
-        .where(Task.user_id == user_id, Task.status == TaskStatus.RUNNING))
-    if running:
-        raise HTTPException(status.HTTP_409_CONFLICT, "该用户有正在运行的任务，请先终止")
+        .where(Task.user_id == user_id, Task.status.in_(ACTIVE_WORKSPACE_STATUSES)))
+    if active:
+        raise HTTPException(status.HTTP_409_CONFLICT, "该用户工作区正在被任务占用，请稍后删除")
 
+    try:
+        await asyncio.to_thread(remove_workspace, user_id)
+    except OSError as exc:
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            f"用户工作区删除失败：{exc}",
+        ) from exc
     await session.delete(target)  # DB 级联删除其任务/通知/模板/token 记录
-    shutil.rmtree(settings.storage_root / str(user_id), ignore_errors=True)
     audit(session, admin.id, "user.delete", target=target.username, detail={"user_id": user_id})
     await session.commit()
 
@@ -257,15 +302,20 @@ async def disable_user(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "不能禁用自己")
 
     target.status = UserStatus.DISABLED
-    # 取消其排队中任务；运行中任务不动（FR-ADMIN-08）
-    queued = await session.scalars(
-        select(Task).where(Task.user_id == user_id, Task.status == TaskStatus.QUEUED))
-    for t in queued:
-        t.status = TaskStatus.CANCELED
-        t.error_message = "账号被禁用"
-        t.finished_at = utcnow()
-    audit(session, admin.id, "user.disable", target=target.username, detail={"user_id": user_id})
+    # 排队任务先保留 staging，提交事务后逐个执行取消归档；运行中任务不动。
+    queued_ids = list((await session.scalars(
+        select(Task.id).where(Task.user_id == user_id, Task.status == TaskStatus.QUEUED)
+    )).all())
+    audit(session, admin.id, "user.disable", target=target.username,
+          detail={"user_id": user_id, "queued_tasks_to_archive": queued_ids})
     await session.commit()
+    for task_id in queued_ids:
+        await finalize_task(
+            task_id,
+            final_status=TaskStatus.CANCELED,
+            reason="账号被禁用",
+            workspace_was_used=False,
+        )
     return target
 
 
@@ -282,6 +332,167 @@ async def enable_user(
     audit(session, admin.id, "user.enable", target=target.username, detail={"user_id": user_id})
     await session.commit()
     return target
+
+
+# ---- 程序模板、用户工作区与归档运维 ----
+
+@router.get("/program-template")
+async def get_program_template_status(
+    admin: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    try:
+        manifest = await asyncio.to_thread(validate_program_template)
+        result = {"status": "ready", **manifest.as_dict()}
+    except ProgramTemplateError as exc:
+        result = {"status": "error", "error": str(exc)}
+    audit(session, admin.id, "program.template_check", detail=result)
+    await session.commit()
+    return result
+
+
+@router.get("/program-sync/status")
+async def get_program_sync_status(session: AsyncSession = Depends(get_session)):
+    users = list((await session.scalars(select(User))).all())
+    try:
+        template = await asyncio.to_thread(validate_program_template)
+    except ProgramTemplateError:
+        template = None
+    deferred_ids = {
+        u.id for u in users
+        if u.program_sync_pending and u.workspace_error and "延期" in u.workspace_error
+    }
+    return {
+        "template_version": template.version if template else None,
+        "total": len(users),
+        "synced": sum(1 for u in users if template
+                      and u.program_version == template.version
+                      and u.exe_sha256 == template.exe_sha256
+                      and u.dll_sha256 == template.dll_sha256
+                      and not u.program_sync_pending
+                      and u.workspace_status == WorkspaceStatus.READY),
+        "pending": sum(1 for u in users if u.program_sync_pending
+                       and u.id not in deferred_ids
+                       and u.workspace_status not in (
+                           WorkspaceStatus.ERROR, WorkspaceStatus.SYNCING,
+                       )),
+        "deferred": len(deferred_ids),
+        "failed": sum(1 for u in users if u.workspace_status == WorkspaceStatus.ERROR),
+        "syncing": sum(1 for u in users if u.workspace_status == WorkspaceStatus.SYNCING),
+    }
+
+
+@router.post("/program-sync")
+async def sync_all_user_programs(
+    admin: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    try:
+        manifest = await asyncio.to_thread(validate_program_template)
+    except ProgramTemplateError as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
+    user_ids = list((await session.scalars(select(User.id).order_by(User.id))).all())
+    results = [await sync_user_program(user_id) for user_id in user_ids]
+    summary = {
+        "version": manifest.version,
+        "total": len(results),
+        "synced": sum(1 for r in results if r.status == "synced"),
+        "deferred": sum(1 for r in results if r.status == "deferred"),
+        "failed": sum(1 for r in results if r.status == "failed"),
+        "items": [r.__dict__ for r in results],
+    }
+    audit(session, admin.id, "program.sync_all", detail={
+        key: value for key, value in summary.items() if key != "items"})
+    await session.commit()
+    return summary
+
+
+@router.post("/users/{user_id}/program-sync")
+async def sync_one_user_program(
+    user_id: int,
+    admin: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    result = await sync_user_program(user_id)
+    if result.status == "missing":
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "用户不存在")
+    audit(session, admin.id, "program.sync_user", target=f"user#{user_id}",
+          detail=result.__dict__)
+    await session.commit()
+    return result.__dict__
+
+
+@router.post("/users/{user_id}/workspace-check")
+async def check_one_user_workspace(
+    user_id: int,
+    admin: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    target = await session.get(User, user_id)
+    if target is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "用户不存在")
+    result = await asyncio.to_thread(
+        check_workspace,
+        user_id,
+        expected_version=target.program_version,
+        expected_exe_sha256=target.exe_sha256,
+        expected_dll_sha256=target.dll_sha256,
+    )
+    target.workspace_status = WorkspaceStatus.READY if result.ready else WorkspaceStatus.ERROR
+    target.workspace_error = None if result.ready else "；".join(result.errors)
+    audit(session, admin.id, "workspace.check", target=f"user#{user_id}",
+          detail={"ready": result.ready, "errors": list(result.errors)})
+    await session.commit()
+    return {
+        "user_id": user_id,
+        "ready": result.ready,
+        "errors": list(result.errors),
+        "program_version": result.program_version,
+        "exe_sha256": result.exe_sha256,
+        "dll_sha256": result.dll_sha256,
+    }
+
+
+@router.get("/tasks/archive-failures")
+async def list_archive_failures(session: AsyncSession = Depends(get_session)):
+    rows = list((await session.scalars(
+        select(Task).where(Task.status == TaskStatus.ARCHIVE_FAILED)
+        .order_by(Task.queued_at)
+    )).all())
+    return [{
+        "id": task.id,
+        "user_id": task.user_id,
+        "archive_version": task.archive_version,
+        "archive_error": task.archive_error,
+        "archive_retry_count": task.archive_retry_count,
+        "archive_retry_at": task.archive_retry_at,
+        "terminal_status": task.terminal_status,
+        "queued_at": task.queued_at,
+    } for task in rows]
+
+
+@router.post("/tasks/{task_id}/archive-retry")
+async def retry_task_archive(
+    task_id: int,
+    admin: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    task = await session.get(Task, task_id)
+    if task is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "任务不存在")
+    if task.status != TaskStatus.ARCHIVE_FAILED:
+        raise HTTPException(status.HTTP_409_CONFLICT, "任务不在归档失败状态")
+    audit(session, admin.id, "archive.retry", target=f"task#{task_id}")
+    await session.commit()
+    await recover_task(task_id)
+    async with db.async_session() as check_session:
+        refreshed = await check_session.get(Task, task_id)
+        return {
+            "task_id": task_id,
+            "status": refreshed.status,
+            "archive_status": refreshed.archive_status,
+            "archive_error": refreshed.archive_error,
+        }
 
 
 # ---- T6.4 系统参数配置 ----
@@ -302,13 +513,17 @@ async def update_system_config(
         if key not in DEFAULT_CONFIG:
             errors[key] = "未知配置项"
             continue
+        if key == "max_running_per_user" and str(value) != "1":
+            errors[key] = "固定工作区模式下单用户运行上限必须为 1"
+            continue
         try:
-            if float(value) <= 0:
+            numeric = float(value)
+            if not math.isfinite(numeric) or numeric <= 0 or not numeric.is_integer():
                 raise ValueError
         except (TypeError, ValueError):
-            errors[key] = "必须为正数"
+            errors[key] = "必须为正整数"
     if errors:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=errors)
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=errors)
 
     for key, value in body.config.items():
         row = await session.get(SystemConfig, key)

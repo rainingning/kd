@@ -1,0 +1,7 @@
+{
+  "version": "mock-trial-1.0.0",
+  "exe": "DCR_3D.exe",
+  "dll": "libiomp5md.dll",
+  "exe_sha256": "17d4d16a93bcf92a59831a2f06a40fffa97ad1ea8f5676129d841634c1cda0e3",
+  "dll_sha256": "e0221a75f5981dbe59eb301a49cff37e973f4ee76999df8732a562251e01c658"
+}

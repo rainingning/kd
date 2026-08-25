@@ -179,13 +179,14 @@ async def test_delete_user_removes_files(client, admin_headers, auth_headers, su
     launched = await dispatch_once()
     await asyncio.gather(*launched)
     task = await _task(db_session, task_id)
-    tdir = storage_tmp / task.storage_dir
-    assert tdir.exists()
+    assert (storage_tmp / task.archive_dir).exists()
 
     erin_id = await db_session.scalar(select(User.id).where(User.username == "erin"))
+    user_root = storage_tmp / str(erin_id)
+    assert user_root.exists()
     resp = await client.delete(f"/api/admin/users/{erin_id}", headers=admin_headers)
     assert resp.status_code == 204
-    assert not tdir.exists()
+    assert not user_root.exists()
     # 任务记录级联删除（用查询而非 get，绕过身份映射缓存）
     assert await db_session.scalar(select(Task).where(Task.id == task_id)) is None
 

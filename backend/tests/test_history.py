@@ -1,6 +1,8 @@
 """T5 任务查询、文件下载、站内通知测试（需要测试数据库）。"""
 import asyncio
+import io
 import json
+import zipfile
 
 from sqlalchemy import select
 
@@ -69,7 +71,13 @@ async def test_file_downloads(client, auth_headers, submit_task, db_session, sto
 
     resp = await client.get(f"/api/tasks/{task_id}/files/result", headers=headers)
     assert resp.status_code == 200
-    assert "mock computation result" in resp.text
+    with zipfile.ZipFile(io.BytesIO(resp.content)) as bundle:
+        assert "Forward_data/summary.txt" in bundle.namelist()
+        assert b"mock DCR_3D result" in bundle.read("Forward_data/summary.txt")
+
+    resp = await client.get(f"/api/tasks/{task_id}/files/stdout", headers=headers)
+    assert resp.status_code == 200
+    assert "mock DCR_3D completed" in resp.text
 
     resp = await client.get(f"/api/tasks/{task_id}/files/stderr", headers=headers)
     assert resp.status_code == 200
@@ -89,9 +97,9 @@ async def test_file_not_ready_and_isolation(client, auth_headers, submit_task, s
     headers_b = await auth_headers("user_b", "b@example.com")
     task_id = (await submit_task(headers_a)).json()["id"]
 
-    # 任务还在排队，stdout 尚未生成
+    # 任务还在排队，尚未完成归档
     resp = await client.get(f"/api/tasks/{task_id}/files/result", headers=headers_a)
-    assert resp.status_code == 404
+    assert resp.status_code == 409
     # 他人任务不可下载
     resp = await client.get(f"/api/tasks/{task_id}/files/input", headers=headers_b)
     assert resp.status_code == 404

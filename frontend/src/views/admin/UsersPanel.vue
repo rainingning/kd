@@ -29,15 +29,49 @@
           <el-tag :type="statusType(row.status)" size="small">{{ statusLabel(row.status) }}</el-tag>
         </template>
       </el-table-column>
+      <el-table-column label="工作区" width="130">
+        <template #default="{ row }">
+          <el-tooltip :content="row.workspace_error || ''" :disabled="!row.workspace_error">
+            <el-tag :type="workspaceType(row.workspace_status)" size="small">
+              {{ workspaceLabel(row.workspace_status) }}
+            </el-tag>
+          </el-tooltip>
+        </template>
+      </el-table-column>
+      <el-table-column label="程序版本" width="150">
+        <template #default="{ row }">
+          <span>{{ row.program_version || '—' }}</span>
+          <el-tag v-if="row.program_sync_pending" type="warning" size="small" class="pending-tag">
+            待同步
+          </el-tag>
+        </template>
+      </el-table-column>
       <el-table-column label="注册时间" width="170">
         <template #default="{ row }">{{ formatTime(row.created_at) }}</template>
       </el-table-column>
       <el-table-column label="最后登录" width="170">
         <template #default="{ row }">{{ formatTime(row.last_login_at) }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="280" fixed="right">
+      <el-table-column label="操作" width="430" fixed="right">
         <template #default="{ row }">
           <el-button size="small" @click="openEdit(row)">编辑</el-button>
+          <el-button
+            size="small"
+            plain
+            :loading="checkingId === row.id"
+            @click="onWorkspaceCheck(row)"
+          >
+            检查工作区
+          </el-button>
+          <el-button
+            size="small"
+            type="primary"
+            plain
+            :loading="syncingId === row.id"
+            @click="onProgramSync(row)"
+          >
+            同步程序
+          </el-button>
           <el-button
             v-if="row.status === 'active'"
             size="small"
@@ -127,6 +161,8 @@ const page = ref(1)
 const pageSize = ref(20)
 const keyword = ref('')
 const loading = ref(false)
+const checkingId = ref(null)
+const syncingId = ref(null)
 
 const dialogVisible = ref(false)
 const editing = ref(null)
@@ -183,6 +219,39 @@ function statusLabel(s) {
 
 function statusType(s) {
   return { active: 'success', pending: 'warning', disabled: 'info' }[s] || 'info'
+}
+
+function workspaceLabel(s) {
+  return { READY: '正常', ERROR: '异常', SYNCING: '同步中' }[s] || s || '未初始化'
+}
+
+function workspaceType(s) {
+  return { READY: 'success', ERROR: 'danger', SYNCING: 'warning' }[s] || 'info'
+}
+
+async function onWorkspaceCheck(row) {
+  checkingId.value = row.id
+  try {
+    const result = await adminApi.checkUserWorkspace(row.id)
+    if (result.ready) ElMessage.success(`用户「${row.username}」工作区检查通过`)
+    else ElMessage.error(`工作区异常：${result.errors.join('；')}`)
+    await load()
+  } finally {
+    checkingId.value = null
+  }
+}
+
+async function onProgramSync(row) {
+  syncingId.value = row.id
+  try {
+    const result = await adminApi.syncUserProgram(row.id)
+    if (result.status === 'synced') ElMessage.success(`已同步到版本 ${result.version}`)
+    else if (result.status === 'deferred') ElMessage.warning(result.error || '用户运行中，已延期同步')
+    else ElMessage.error(result.error || '程序同步失败')
+    await load()
+  } finally {
+    syncingId.value = null
+  }
 }
 
 function openCreate() {
@@ -286,6 +355,10 @@ async function copyTempPassword() {
 </script>
 
 <style scoped>
+.pending-tag {
+  margin-left: 6px;
+}
+
 .pager {
   display: flex;
   justify-content: flex-end;

@@ -15,6 +15,7 @@ from .db import async_session
 from .scheduler.cleanup import cleanup_loop, stop_cleanup
 from .scheduler.dispatcher import dispatch_loop, recover_interrupted_tasks, shutdown_scheduler
 from .services.config import ensure_defaults
+from .services.program_template import ProgramTemplateError, validate_program_template
 
 logger = logging.getLogger(__name__)
 
@@ -22,12 +23,18 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     settings.storage_root.mkdir(parents=True, exist_ok=True)
+    settings.result_zip_cache_root.mkdir(parents=True, exist_ok=True)
+    try:
+        await asyncio.to_thread(validate_program_template)
+    except ProgramTemplateError:
+        logger.critical("正式程序模板自检失败，服务拒绝启动", exc_info=True)
+        raise
     async with async_session() as session:
         await ensure_defaults(session)  # system_config 默认配置项
         await session.commit()
     recovered = await recover_interrupted_tasks()
     if recovered:
-        logger.warning("服务重启：%d 个运行中任务被标记为失败", recovered)
+        logger.warning("服务重启：已检查并恢复/归档 %d 个中断任务", recovered)
     dispatcher = asyncio.create_task(dispatch_loop())
     cleaner = asyncio.create_task(cleanup_loop())
     yield

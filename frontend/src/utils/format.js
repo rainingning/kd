@@ -33,14 +33,22 @@ function humanizeSeconds(sec) {
 
 export const TASK_STATUS = {
   QUEUED: { label: '排队中', type: 'warning' },
+  PREPARING: { label: '准备工作区', type: 'warning' },
   RUNNING: { label: '运行中', type: 'primary' },
+  ARCHIVING: { label: '正在归档', type: 'warning' },
+  ARCHIVE_FAILED: { label: '归档失败', type: 'danger' },
   COMPLETED: { label: '已完成', type: 'success' },
   FAILED: { label: '失败', type: 'danger' },
   CANCELED: { label: '已取消', type: 'info' },
 }
 
+// 需要继续轮询的非终态；ARCHIVE_FAILED 会由后端自动重试。
 export function isActiveStatus(status) {
-  return status === 'QUEUED' || status === 'RUNNING'
+  return ['QUEUED', 'PREPARING', 'RUNNING', 'ARCHIVING', 'ARCHIVE_FAILED'].includes(status)
+}
+
+export function isCancelableStatus(status) {
+  return ['QUEUED', 'PREPARING', 'RUNNING'].includes(status)
 }
 
 export const NOTIFICATION_TYPE = {

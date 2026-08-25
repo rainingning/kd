@@ -29,13 +29,35 @@ class UserStatus:
 
 class TaskStatus:
     QUEUED = "QUEUED"
+    PREPARING = "PREPARING"
     RUNNING = "RUNNING"
+    ARCHIVING = "ARCHIVING"
+    ARCHIVE_FAILED = "ARCHIVE_FAILED"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
     CANCELED = "CANCELED"
 
 
 TERMINAL_STATUSES = (TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELED)
+ACTIVE_WORKSPACE_STATUSES = (
+    TaskStatus.PREPARING,
+    TaskStatus.RUNNING,
+    TaskStatus.ARCHIVING,
+    TaskStatus.ARCHIVE_FAILED,
+)
+
+
+class ArchiveStatus:
+    PENDING = "PENDING"
+    ARCHIVING = "ARCHIVING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+
+
+class WorkspaceStatus:
+    READY = "READY"
+    ERROR = "ERROR"
+    SYNCING = "SYNCING"
 
 
 class TokenType:
@@ -58,6 +80,14 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     role: Mapped[str] = mapped_column(String(16), nullable=False, default=UserRole.USER)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default=UserStatus.PENDING)
+    workspace_status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default=WorkspaceStatus.ERROR)
+    workspace_error: Mapped[str | None] = mapped_column(Text)
+    program_version: Mapped[str | None] = mapped_column(String(64))
+    exe_sha256: Mapped[str | None] = mapped_column(String(64))
+    dll_sha256: Mapped[str | None] = mapped_column(String(64))
+    program_synced_at: Mapped[datetime | None] = mapped_column(TSTZ)
+    program_sync_pending: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(TSTZ, default=utcnow, nullable=False)
     last_login_at: Mapped[datetime | None] = mapped_column(TSTZ)
 
@@ -96,7 +126,26 @@ class Task(Base):
     status: Mapped[str] = mapped_column(String(16), nullable=False, default=TaskStatus.QUEUED)
     params: Mapped[dict] = mapped_column(JSONB, nullable=False)  # 参数快照
     input_filename: Mapped[str | None] = mapped_column(String(255))  # 原始上传文件名
-    storage_dir: Mapped[str | None] = mapped_column(String(512))  # 任务目录相对路径
+    storage_dir: Mapped[str | None] = mapped_column(String(512))  # 旧任务目录（迁移兼容）
+    staging_dir: Mapped[str | None] = mapped_column(String(512))
+    workspace_was_used: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    archive_dir: Mapped[str | None] = mapped_column(String(512))
+    archive_version: Mapped[str | None] = mapped_column(String(96))
+    archive_status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default=ArchiveStatus.PENDING)
+    terminal_status: Mapped[str | None] = mapped_column(String(16))
+    archive_error: Mapped[str | None] = mapped_column(Text)
+    archive_retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    archive_retry_at: Mapped[datetime | None] = mapped_column(TSTZ)
+    archived_at: Mapped[datetime | None] = mapped_column(TSTZ)
+    program_version: Mapped[str | None] = mapped_column(String(64))
+    exe_sha256: Mapped[str | None] = mapped_column(String(64))
+    dll_sha256: Mapped[str | None] = mapped_column(String(64))
+    result_file_count: Mapped[int | None] = mapped_column(Integer)
+    result_size_bytes: Mapped[int | None] = mapped_column(BigInteger)
+    cleanup_error: Mapped[str | None] = mapped_column(Text)
+    cleanup_retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    cleanup_retry_at: Mapped[datetime | None] = mapped_column(TSTZ)
     exit_code: Mapped[int | None] = mapped_column(Integer)
     error_message: Mapped[str | None] = mapped_column(Text)
     queued_at: Mapped[datetime] = mapped_column(TSTZ, default=utcnow, nullable=False)
@@ -115,11 +164,12 @@ class SystemConfig(Base):
 # 系统配置默认值（T1.2 seed；含义见需求说明书 FR-ADMIN-06）
 DEFAULT_CONFIG = {
     "max_concurrent_tasks": "50",
-    "max_running_per_user": "3",
+    "max_running_per_user": "1",
     "max_queued_per_user": "3",
     "task_timeout_minutes": "60",
     "retention_days": "30",
     "max_upload_mb": "200",
+    "min_free_disk_mb": "1024",
 }
 
 

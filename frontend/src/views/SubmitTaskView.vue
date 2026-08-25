@@ -41,7 +41,10 @@
             <el-icon :size="40" class="upload-icon"><UploadFilled /></el-icon>
             <div class="el-upload__text">拖拽文件到此处，或 <em>点击选择文件</em></div>
             <template #tip>
-              <div class="el-upload__tip">单个输入数据文件，大小上限由系统配置决定</div>
+              <div class="el-upload__tip">
+                单个输入文件，大小上限由系统配置决定；运行时将固定保存为
+                <code>mesh/mesh.mphtxt</code>，历史下载仍保留原始文件名。
+              </div>
             </template>
           </el-upload>
           <div v-if="fileError" class="field-error">{{ fileError }}</div>

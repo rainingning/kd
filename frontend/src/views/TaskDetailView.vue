@@ -6,7 +6,7 @@
           <span class="title">任务详情 <span v-if="task">#{{ task.id }}</span></span>
           <div v-if="task" class="header-actions">
             <el-button
-              v-if="isActiveStatus(task.status)"
+              v-if="isCancelableStatus(task.status)"
               type="danger"
               plain
               @click="onCancel"
@@ -42,20 +42,64 @@
           <el-descriptions-item label="退出码">
             {{ task.exit_code === null ? '—' : task.exit_code }}
           </el-descriptions-item>
-          <el-descriptions-item v-if="task.error_message" label="失败原因" :span="2">
-            <span class="error-text">{{ task.error_message }}</span>
+          <el-descriptions-item label="归档状态">
+            {{ archiveStatusLabel(task.archive_status) }}
+          </el-descriptions-item>
+          <el-descriptions-item label="归档版本">
+            {{ task.archive_version || '—' }}
+          </el-descriptions-item>
+          <el-descriptions-item label="程序版本">
+            {{ task.program_version || '—' }}
+          </el-descriptions-item>
+          <el-descriptions-item label="结果规模">
+            {{ resultSummary(task) }}
+          </el-descriptions-item>
+          <el-descriptions-item v-if="task.error_message" label="任务说明" :span="2">
+            <span :class="{ 'error-text': task.status === 'FAILED' }">{{ task.error_message }}</span>
+          </el-descriptions-item>
+          <el-descriptions-item v-if="task.archive_error" label="归档错误" :span="2">
+            <span class="error-text">{{ task.archive_error }}</span>
+            <span v-if="task.archive_retry_count" class="retry-text">
+              （已重试 {{ task.archive_retry_count }} 次，下次：{{ formatTime(task.archive_retry_at) }}）
+            </span>
+          </el-descriptions-item>
+          <el-descriptions-item v-if="task.exe_sha256" label="DCR_3D.exe SHA-256" :span="2">
+            <code class="hash-text">{{ task.exe_sha256 }}</code>
+          </el-descriptions-item>
+          <el-descriptions-item v-if="task.dll_sha256" label="libiomp5md.dll SHA-256" :span="2">
+            <code class="hash-text">{{ task.dll_sha256 }}</code>
           </el-descriptions-item>
         </el-descriptions>
+
+        <el-alert
+          v-if="task.status === 'ARCHIVE_FAILED'"
+          type="error"
+          title="结果归档失败。平台会自动重试；在归档成功前，该用户的下一任务不会覆盖当前工作区。"
+          :closable="false"
+          class="archive-alert"
+        />
 
         <el-divider content-position="left">参数快照</el-divider>
         <ParamForm :model-value="task.params" readonly />
 
         <el-divider content-position="left">文件下载</el-divider>
         <div class="download-row">
-          <el-button :icon="Download" @click="onDownload('result')">结果文件</el-button>
-          <el-button :icon="Download" @click="onDownload('stderr')">错误日志</el-button>
-          <el-button :icon="Download" @click="onDownload('input')">输入文件</el-button>
-          <el-button :icon="Download" @click="onDownload('params')">参数文件</el-button>
+          <el-button :icon="Download" :disabled="!archiveReady" @click="onDownload('result')">
+            结果目录 ZIP
+          </el-button>
+          <el-button :icon="Download" :disabled="!archiveReady" @click="onDownload('stdout')">
+            标准输出日志
+          </el-button>
+          <el-button :icon="Download" :disabled="!archiveReady" @click="onDownload('stderr')">
+            错误日志
+          </el-button>
+          <el-button :icon="Download" :disabled="!archiveReady" @click="onDownload('input')">
+            输入文件
+          </el-button>
+          <el-button :icon="Download" :disabled="!archiveReady" @click="onDownload('params')">
+            参数文件
+          </el-button>
+          <span v-if="!archiveReady" class="text-muted">归档完成后可下载</span>
         </div>
       </template>
     </el-card>
@@ -63,14 +107,20 @@
 </template>
 
 <script setup>
-import { onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Download } from '@element-plus/icons-vue'
 import ParamForm from '../components/ParamForm.vue'
 import StatusTag from '../components/StatusTag.vue'
 import { downloadTaskFile, taskApi } from '../api/tasks'
-import { elapsedSince, formatDuration, formatTime, isActiveStatus } from '../utils/format'
+import {
+  elapsedSince,
+  formatDuration,
+  formatTime,
+  isActiveStatus,
+  isCancelableStatus,
+} from '../utils/format'
 
 const route = useRoute()
 const router = useRouter()
@@ -79,6 +129,7 @@ const taskId = route.params.id
 const task = ref(null)
 const loading = ref(false)
 const now = ref(new Date())
+const archiveReady = computed(() => task.value?.archive_status === 'COMPLETED')
 
 let pollTimer = null
 let clockTimer = null
@@ -115,13 +166,36 @@ async function load(silent = false) {
 }
 
 const FALLBACK_NAMES = {
-  result: 'stdout.txt',
+  result: `task_${taskId}_Forward_data.zip`,
+  stdout: 'stdout.txt',
   stderr: 'stderr.txt',
-  params: 'params.in',
+  params: 'model_DC.dat',
+}
+
+function archiveStatusLabel(status) {
+  return {
+    PENDING: '等待归档',
+    ARCHIVING: '正在归档',
+    COMPLETED: '归档完成',
+    FAILED: '归档失败',
+  }[status] || status || '—'
+}
+
+function formatBytes(bytes) {
+  if (bytes === null || bytes === undefined) return '—'
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`
+  return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`
+}
+
+function resultSummary(value) {
+  if (value.result_file_count === null || value.result_file_count === undefined) return '—'
+  return `${value.result_file_count} 个文件，${formatBytes(value.result_size_bytes)}`
 }
 
 function onDownload(kind) {
-  const fallback = kind === 'input' ? task.value.input_filename : FALLBACK_NAMES[kind]
+  const fallback = kind === 'input' ? (task.value.input_filename || 'mesh.mphtxt') : FALLBACK_NAMES[kind]
   downloadTaskFile(task.value.id, kind, fallback)
 }
 
@@ -159,6 +233,19 @@ async function onCancel() {
 
 .error-text {
   color: var(--el-color-danger);
+}
+
+.hash-text {
+  overflow-wrap: anywhere;
+}
+
+.retry-text {
+  margin-left: 8px;
+  color: #909399;
+}
+
+.archive-alert {
+  margin-top: 16px;
 }
 
 .download-row {

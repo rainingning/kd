@@ -44,17 +44,32 @@ from app.services.workspace import (
 
 def _make_template(root: Path, *, version: str = "1.2.3") -> Path:
     root.mkdir()
-    exe = root / "DCR_3D.exe"
-    dll = root / "libiomp5md.dll"
-    exe.write_bytes(b"fake-exe-v1")
-    dll.write_bytes(b"fake-dll-v1")
-    (root / "program-manifest.json").write_text(json.dumps({
-        "version": version,
-        "exe": exe.name,
-        "dll": dll.name,
-        "exe_sha256": sha256_file(exe),
-        "dll_sha256": sha256_file(dll),
-    }), encoding="utf-8")
+    for program_key, executable in {
+        "dcr_3d": "DCR_3D.exe",
+        "be_fetd": "BE_FETD.exe",
+        "fdem3d_frequency_domain": "FDEM3D_Frequency_Domain.exe",
+    }.items():
+        directory = root / "programs" / program_key
+        directory.mkdir(parents=True)
+        exe = directory / executable
+        dll = directory / "libiomp5md.dll"
+        exe.write_bytes(b"fake-exe-v1")
+        dll.write_bytes(b"fake-dll-v1")
+        parameter_sha256 = {}
+        if program_key != "dcr_3d":
+            for filename in ("GroundedWireSource.dat", "LoopSource.dat"):
+                path = directory / filename
+                path.write_text(f"{program_key}-{filename}\n", encoding="utf-8")
+                parameter_sha256[filename] = sha256_file(path)
+        (directory / "program-manifest.json").write_text(json.dumps({
+            "program_key": program_key,
+            "version": version,
+            "exe": executable,
+            "dll": dll.name,
+            "exe_sha256": sha256_file(exe),
+            "dll_sha256": sha256_file(dll),
+            "parameter_sha256": parameter_sha256,
+        }), encoding="utf-8")
     return root
 
 
@@ -64,7 +79,7 @@ def test_program_template_validation(tmp_path):
     assert manifest.version == "1.2.3"
     assert manifest.exe == "DCR_3D.exe"
 
-    (template / "DCR_3D.exe").write_bytes(b"tampered")
+    (template / "programs" / "dcr_3d" / "DCR_3D.exe").write_bytes(b"tampered")
     with pytest.raises(ProgramTemplateError, match="SHA-256"):
         validate_program_template(template)
 
@@ -76,10 +91,15 @@ def test_initialize_and_check_workspace(tmp_path, monkeypatch):
 
     manifest = initialize_workspace(42, template_dir=template)
     root = user_root(42)
-    assert (root / "DCR_3D.exe").read_bytes() == b"fake-exe-v1"
-    assert (root / "libiomp5md.dll").read_bytes() == b"fake-dll-v1"
-    for name in ("mesh", "Forward_data", "staging", "archives"):
-        assert (root / name).is_dir()
+    dcr_root = root / "programs" / "dcr_3d"
+    assert (dcr_root / "DCR_3D.exe").read_bytes() == b"fake-exe-v1"
+    assert (dcr_root / "libiomp5md.dll").read_bytes() == b"fake-dll-v1"
+    assert (dcr_root / "mesh").is_dir()
+    assert (dcr_root / "Forward_data").is_dir()
+    assert (root / "staging").is_dir()
+    assert (root / "archives").is_dir()
+    assert (root / "programs" / "be_fetd" / "GroundedWireSource.dat").is_file()
+    assert (root / "programs" / "fdem3d_frequency_domain" / "LoopSource.dat").is_file()
 
     check = check_workspace(
         42,
@@ -97,16 +117,19 @@ def test_program_pair_sync_rolls_back_on_second_replace_failure(tmp_path, monkey
     monkeypatch.setattr(settings, "storage_root", storage)
     initialize_workspace(9, template_dir=template)
 
-    exe = template / "DCR_3D.exe"
-    dll = template / "libiomp5md.dll"
+    dcr_template = template / "programs" / "dcr_3d"
+    exe = dcr_template / "DCR_3D.exe"
+    dll = dcr_template / "libiomp5md.dll"
     exe.write_bytes(b"fake-exe-v2")
     dll.write_bytes(b"fake-dll-v2")
-    (template / "program-manifest.json").write_text(json.dumps({
+    (dcr_template / "program-manifest.json").write_text(json.dumps({
+        "program_key": "dcr_3d",
         "version": "2.0.0",
         "exe": exe.name,
         "dll": dll.name,
         "exe_sha256": sha256_file(exe),
         "dll_sha256": sha256_file(dll),
+        "parameter_sha256": {},
     }), encoding="utf-8")
 
     real_replace = workspace_service.os.replace
@@ -126,8 +149,9 @@ def test_program_pair_sync_rolls_back_on_second_replace_failure(tmp_path, monkey
     with pytest.raises(OSError, match="simulated"):
         sync_program_files(9, template_dir=template)
 
-    assert (user_root(9) / "DCR_3D.exe").read_bytes() == b"fake-exe-v1"
-    assert (user_root(9) / "libiomp5md.dll").read_bytes() == b"fake-dll-v1"
+    dcr_root = user_root(9) / "programs" / "dcr_3d"
+    assert (dcr_root / "DCR_3D.exe").read_bytes() == b"fake-exe-v1"
+    assert (dcr_root / "libiomp5md.dll").read_bytes() == b"fake-dll-v1"
 
 
 def test_prepare_fixed_workspace_clears_old_results(tmp_path, monkeypatch):
@@ -191,6 +215,7 @@ def test_archive_publishes_immutable_version(tmp_path, monkeypatch):
     (stage / "stdout.txt").write_text("out", encoding="utf-8")
     (stage / "stderr.txt").write_text("err", encoding="utf-8")
 
+    params_path(uid).parent.mkdir(parents=True, exist_ok=True)
     params_path(uid).write_text("active-model\n", encoding="utf-8")
     mesh_path(uid).parent.mkdir(parents=True, exist_ok=True)
     mesh_path(uid).write_bytes(b"active-mesh")
@@ -257,21 +282,24 @@ def test_archive_version_is_utc_and_unique_by_task():
 def test_runner_builds_no_argument_commands(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "storage_root", tmp_path / "storage")
     monkeypatch.setattr(settings, "execution_mode", "dcr3d")
-    assert build_argv(17) == [str(user_root(17) / "DCR_3D.exe")]
+    assert build_argv(17) == [str(user_root(17) / "programs" / "dcr_3d" / "DCR_3D.exe")]
+    assert build_argv(17, "be_fetd") == [
+        str(user_root(17) / "programs" / "be_fetd" / "BE_FETD.exe")
+    ]
 
     monkeypatch.setattr(settings, "execution_mode", "mock")
     monkeypatch.setattr(
         settings,
-        "mock_dcr3d_command",
-        f'"{sys.executable}" "{REPO_ROOT / "mock" / "mock_dcr3d.py"}"',
+        "mock_fortran_command",
+        f'"{sys.executable}" "{REPO_ROOT / "mock" / "mock_fortran_solver.py"}"',
     )
     argv = build_argv(17)
-    assert argv == [sys.executable, str(REPO_ROOT / "mock" / "mock_dcr3d.py")]
+    assert argv == [sys.executable, str(REPO_ROOT / "mock" / "mock_fortran_solver.py")]
     assert all("model_DC.dat" not in value and "mesh.mphtxt" not in value for value in argv)
 
 
 def test_fixed_path_mock(tmp_path, monkeypatch):
-    workspace = tmp_path / "workspace"
+    workspace = tmp_path / "dcr_3d"
     (workspace / "mesh").mkdir(parents=True)
     (workspace / PARAMS_FILE).write_text(
         json.dumps({"grid_size": 10, "mock_sleep": 0, "mock_exit_code": 0}),
@@ -279,9 +307,9 @@ def test_fixed_path_mock(tmp_path, monkeypatch):
     )
     (workspace / "mesh" / MESH_FILE).write_bytes(b"mesh")
     monkeypatch.chdir(workspace)
-    monkeypatch.setattr(sys, "argv", ["mock_dcr3d.py"])
+    monkeypatch.setattr(sys, "argv", ["mock_fortran_solver.py"])
 
-    source = REPO_ROOT / "mock" / "mock_dcr3d.py"
+    source = REPO_ROOT / "mock" / "mock_fortran_solver.py"
     spec = importlib.util.spec_from_file_location("mock_dcr3d_test", source)
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None

@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..db import get_session
 from ..deps import get_current_user
 from ..models import (
-    EmailToken, TokenType, User, UserRole, UserStatus, WorkspaceStatus, utcnow,
+    EmailToken, TokenType, User, UserProgram, UserRole, UserStatus, WorkspaceStatus, utcnow,
 )
 from ..schemas import (
     ForgotPasswordRequest,
@@ -45,24 +45,40 @@ def _validate_token(rec: EmailToken | None) -> EmailToken:
     return rec
 
 
-def _apply_program_manifest(user: User, manifest) -> None:
-    user.workspace_status = WorkspaceStatus.READY
-    user.workspace_error = None
-    user.program_version = manifest.version
-    user.exe_sha256 = manifest.exe_sha256
-    user.dll_sha256 = manifest.dll_sha256
-    user.program_synced_at = utcnow()
-
-
-async def _initialize_user_workspace(user: User) -> None:
+async def _initialize_user_workspace(user: User, session: AsyncSession) -> None:
     try:
-        manifest = await asyncio.to_thread(initialize_workspace, user.id)
+        manifests = await asyncio.to_thread(initialize_workspace, user.id)
     except WorkspaceError as exc:
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
             f"用户工作区初始化失败：{exc}",
         ) from exc
-    _apply_program_manifest(user, manifest)
+    user.workspace_status = WorkspaceStatus.READY
+    user.workspace_error = None
+    installed = {
+        row.program_key: row
+        for row in (await session.scalars(
+            select(UserProgram).where(UserProgram.user_id == user.id)
+        )).all()
+    }
+    for program_key, manifest in manifests.items():
+        row = installed.get(program_key) or UserProgram(
+            user_id=user.id, program_key=program_key)
+        row.workspace_status = WorkspaceStatus.READY
+        row.workspace_error = None
+        row.program_version = manifest.version
+        row.exe_sha256 = manifest.exe_sha256
+        row.dll_sha256 = manifest.dll_sha256
+        row.runtime_file_hashes = manifest.runtime_file_hashes
+        row.program_synced_at = utcnow()
+        row.program_sync_pending = False
+        session.add(row)
+    # 兼容旧客户端字段，固定映射 DCR；真实状态以 user_programs 为准。
+    dcr = manifests["dcr_3d"]
+    user.program_version = dcr.version
+    user.exe_sha256 = dcr.exe_sha256
+    user.dll_sha256 = dcr.dll_sha256
+    user.program_synced_at = utcnow()
 
 
 @router.post("/register", status_code=status.HTTP_201_CREATED)
@@ -75,7 +91,7 @@ async def register(body: RegisterRequest, session: AsyncSession = Depends(get_se
         if (existing.status == UserStatus.PENDING
                 and existing.username == body.username and existing.email == body.email):
             existing.password_hash = hash_password(body.password)
-            await _initialize_user_workspace(existing)
+            await _initialize_user_workspace(existing, session)
             await session.execute(
                 update(EmailToken)
                 .where(
@@ -100,7 +116,7 @@ async def register(body: RegisterRequest, session: AsyncSession = Depends(get_se
     )
     session.add(user)
     await session.flush()
-    await _initialize_user_workspace(user)
+    await _initialize_user_workspace(user, session)
     token = _new_token(session, user.id, TokenType.VERIFY, VERIFY_TOKEN_HOURS)
     await session.commit()
     await send_verification_email(user.email, token)

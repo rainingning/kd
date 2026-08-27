@@ -1,14 +1,26 @@
 import http from './http'
 
-// 参数 Schema 基本不变，做模块级缓存避免重复请求
-let schemaPromise = null
+const schemaPromises = new Map()
+let programsPromise = null
 
-export function getParamSchema() {
-  if (!schemaPromise) {
-    schemaPromise = http.get('/param-schema').catch((err) => {
-      schemaPromise = null
+export function getPrograms() {
+  if (!programsPromise) {
+    programsPromise = http.get('/programs').catch((err) => {
+      programsPromise = null
       throw err
     })
   }
-  return schemaPromise
+  return programsPromise
+}
+
+export function getParamSchema(programKey = 'dcr_3d') {
+  if (!schemaPromises.has(programKey)) {
+    const promise = http.get('/param-schema', { params: { program_key: programKey } })
+      .catch((err) => {
+        schemaPromises.delete(programKey)
+        throw err
+      })
+    schemaPromises.set(programKey, promise)
+  }
+  return schemaPromises.get(programKey)
 }

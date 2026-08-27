@@ -1,0 +1,9 @@
+{
+  "program_key": "dcr_3d",
+  "version": "mock-trial-2.0.0",
+  "exe": "DCR_3D.exe",
+  "dll": "libiomp5md.dll",
+  "exe_sha256": "dac73a62b9a026868211d41918547d72d8528dc94f7715a1f6d66c79eaa7a338",
+  "dll_sha256": "e0221a75f5981dbe59eb301a49cff37e973f4ee76999df8732a562251e01c658",
+  "parameter_sha256": {}
+}

@@ -9,6 +9,12 @@
     <el-table :data="running" border size="small">
       <el-table-column prop="id" label="ID" width="80" />
       <el-table-column prop="username" label="用户" width="140" />
+      <el-table-column label="程序" min-width="190">
+        <template #default="{ row }">{{ programLabel(row.program_key) }}</template>
+      </el-table-column>
+      <el-table-column label="参数选择" width="100">
+        <template #default="{ row }">{{ row.stdin_choice || '—' }}</template>
+      </el-table-column>
       <el-table-column label="状态" width="120">
         <template #default="{ row }">
           <el-tag :type="TASK_STATUS[row.status]?.type || 'info'" size="small">
@@ -44,6 +50,12 @@
     <el-table :data="queued" border size="small">
       <el-table-column prop="id" label="ID" width="80" />
       <el-table-column prop="username" label="用户" width="140" />
+      <el-table-column label="程序" min-width="190">
+        <template #default="{ row }">{{ programLabel(row.program_key) }}</template>
+      </el-table-column>
+      <el-table-column label="参数选择" width="100">
+        <template #default="{ row }">{{ row.stdin_choice || '—' }}</template>
+      </el-table-column>
       <el-table-column label="输入文件" min-width="180" show-overflow-tooltip>
         <template #default="{ row }">{{ row.input_filename || '—' }}</template>
       </el-table-column>
@@ -74,6 +86,14 @@ const queued = ref([])
 const loading = ref(false)
 const loaded = ref(false)
 const now = ref(new Date())
+
+function programLabel(key) {
+  return {
+    dcr_3d: 'DCR_3D',
+    be_fetd: 'BE_FETD',
+    fdem3d_frequency_domain: 'FDEM3D_Frequency_Domain',
+  }[key] || key || '—'
+}
 
 let timer = null
 let clockTimer = null

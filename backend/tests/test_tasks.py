@@ -6,6 +6,7 @@ import asyncio
 import json
 from types import SimpleNamespace
 
+import pytest
 from sqlalchemy import func, select
 
 from app.models import Notification, NotificationType, SystemConfig, Task, TaskStatus, User
@@ -52,6 +53,63 @@ async def test_submit_success(client, auth_headers, db_session, storage_tmp):
     assert len(stages) == 1
     assert json.loads((stages[0] / "model_DC.dat").read_text())["grid_size"] == 10
     assert (stages[0] / "mesh.mphtxt").read_bytes() == b"1,2,3\n4,5,6\n"
+
+
+@pytest.mark.parametrize("program_key,choice,selected_name", [
+    ("be_fetd", 1, "GroundedWireSource.dat"),
+    ("be_fetd", 2, "LoopSource.dat"),
+    ("fdem3d_frequency_domain", 1, "GroundedWireSource.dat"),
+    ("fdem3d_frequency_domain", 2, "LoopSource.dat"),
+])
+async def test_uploaded_parameter_program_stdin_and_archive(
+    client, auth_headers, db_session, storage_tmp,
+    program_key, choice, selected_name,
+):
+    headers = await auth_headers(f"u_{program_key[:8]}_{choice}", f"{program_key[:8]}-{choice}@example.com")
+    payload = f"custom-{program_key}-{choice}\n".encode()
+    resp = await client.post(
+        "/api/tasks",
+        data={"program_key": program_key, "params": "{}", "stdin_choice": str(choice)},
+        files={
+            "file": ("mesh.mphtxt", b"mesh-data"),
+            "parameter_file": (selected_name, payload, "application/octet-stream"),
+        },
+        headers=headers,
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["program_key"] == program_key
+    assert body["stdin_choice"] == choice
+    assert body["parameter_filename"] == selected_name
+
+    launched = await dispatch_once()
+    await asyncio.gather(*launched)
+    task = await _task(db_session, body["id"])
+    assert task.status == TaskStatus.COMPLETED
+    archive = storage_tmp / task.archive_dir
+    assert (archive / selected_name).read_bytes() == payload
+    assert (archive / "GroundedWireSource.dat").is_file()
+    assert (archive / "LoopSource.dat").is_file()
+    assert f"choice {choice}" in (archive / "stdout.txt").read_text()
+    metadata = json.loads((archive / "task.json").read_text(encoding="utf-8"))
+    assert metadata["stdin_choice"] == choice
+    assert set(metadata["runtime_file_hashes"]) == {
+        "GroundedWireSource.dat", "LoopSource.dat",
+    }
+
+
+async def test_new_program_rejects_missing_or_invalid_choice(client, auth_headers, storage_tmp):
+    headers = await auth_headers("invalid_choice", "invalid-choice@example.com")
+    base_files = {"file": ("mesh.mphtxt", b"mesh")}
+    missing = await client.post(
+        "/api/tasks", data={"program_key": "be_fetd", "params": "{}"},
+        files=base_files, headers=headers)
+    assert missing.status_code == 422
+    invalid = await client.post(
+        "/api/tasks",
+        data={"program_key": "be_fetd", "params": "{}", "stdin_choice": "3"},
+        files={**base_files, "parameter_file": ("x.dat", b"x")}, headers=headers)
+    assert invalid.status_code == 422
 
 
 async def test_submit_invalid_params(client, auth_headers, storage_tmp):
@@ -115,7 +173,7 @@ async def test_invalid_program_template_blocks_task_start(
     headers = await auth_headers("template_fail", "template-fail@example.com")
     task_id = (await submit_task(headers)).json()["id"]
 
-    def invalid_template():
+    def invalid_template(*_args, **_kwargs):
         raise ProgramTemplateError("simulated template hash mismatch")
 
     monkeypatch.setattr(runner_service, "validate_program_template", invalid_template)
@@ -170,7 +228,9 @@ async def test_sequential_tasks_preserve_immutable_archives(
     assert first.archive_version != second.archive_version
     assert (first_archive / "mesh" / "mesh.mphtxt").read_bytes() == b"first-mesh"
     assert (second_archive / "mesh" / "mesh.mphtxt").read_bytes() == b"second-mesh"
-    assert (storage_tmp / str(second.user_id) / "mesh" / "mesh.mphtxt").read_bytes() == b"second-mesh"
+    assert (
+        storage_tmp / str(second.user_id) / "programs" / "dcr_3d" / "mesh" / "mesh.mphtxt"
+    ).read_bytes() == b"second-mesh"
 
 
 async def test_run_failure_nonzero_exit(client, auth_headers, db_session, storage_tmp):

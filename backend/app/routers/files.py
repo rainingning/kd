@@ -9,23 +9,23 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..db import get_session
 from ..deps import get_current_user
 from ..models import ArchiveStatus, Task, User
-from ..services.result_zip import ResultZipError, ensure_result_zip
-from ..services.storage import (
-    MESH_DIR,
-    MESH_FILE,
-    PARAMS_FILE,
-    STDERR_FILE,
-    STDOUT_FILE,
-    path_from_relative,
+from ..services.programs import (
+    DCR_3D, DCR_PARAMS_FILE, GROUNDED_WIRE_FILE, LOOP_SOURCE_FILE,
+    MESH_DIR, MESH_FILE,
 )
+from ..services.result_zip import ResultZipError, ensure_result_zip
+from ..services.storage import STDERR_FILE, STDOUT_FILE, path_from_relative
 
 router = APIRouter(prefix="/api/tasks", tags=["files"])
 
-_FILES = {
+_STATIC_FILES = {
     "stderr": (Path(STDERR_FILE), STDERR_FILE),
     "stdout": (Path(STDOUT_FILE), STDOUT_FILE),
     "input": (Path(MESH_DIR) / MESH_FILE, None),
-    "params": (Path(PARAMS_FILE), PARAMS_FILE),
+}
+_PARAMETER_KINDS = {
+    "grounded-params": GROUNDED_WIRE_FILE,
+    "loop-params": LOOP_SOURCE_FILE,
 }
 
 
@@ -43,7 +43,8 @@ async def download_file(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
-    if kind not in (*_FILES.keys(), "result"):
+    allowed = (*_STATIC_FILES.keys(), *_PARAMETER_KINDS.keys(), "params", "result")
+    if kind not in allowed:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "未知文件类型")
     task = await session.get(Task, task_id)
     if task is None or task.user_id != user.id:
@@ -65,11 +66,24 @@ async def download_file(
                 ensure_result_zip, task.id, task.archive_version, archived)
         except ResultZipError as exc:
             raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, str(exc)) from exc
-        return FileResponse(path, filename=f"task_{task.id}_Forward_data.zip")
+        return FileResponse(
+            path, filename=f"task_{task.id}_{task.program_key}_Forward_data.zip")
 
-    relative, download_name = _FILES[kind]
-    if kind == "input":
-        download_name = _safe_download_name(task.input_filename, MESH_FILE)
+    if kind in _STATIC_FILES:
+        relative, download_name = _STATIC_FILES[kind]
+        if kind == "input":
+            download_name = _safe_download_name(task.input_filename, MESH_FILE)
+    elif kind == "params":
+        filename = DCR_PARAMS_FILE if task.program_key == DCR_3D else task.parameter_filename
+        if not filename:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "任务没有所选参数文件")
+        relative, download_name = Path(filename), filename
+    else:
+        if task.program_key == DCR_3D:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "DCR_3D 不包含该参数文件")
+        filename = _PARAMETER_KINDS[kind]
+        relative, download_name = Path(filename), filename
+
     path = archived / relative
     if not path.is_file():
         raise HTTPException(status.HTTP_404_NOT_FOUND, "归档文件不存在")

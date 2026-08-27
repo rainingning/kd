@@ -1,47 +1,72 @@
-"""用户固定工作区、任务暂存与归档路径助手。"""
+"""用户多程序工作区、任务暂存与归档路径助手。"""
 from pathlib import Path
 
 from ..config import settings
+from .programs import (
+    DCR_3D,
+    DCR_PARAMS_FILE,
+    MESH_DIR,
+    MESH_FILE,
+    PROGRAM_DLL,
+    RESULT_DIR,
+    get_program,
+)
 
-PROGRAM_EXE = "DCR_3D.exe"
-PROGRAM_DLL = "libiomp5md.dll"
-PARAMS_FILE = "model_DC.dat"
-MESH_DIR = "mesh"
-MESH_FILE = "mesh.mphtxt"
-RESULT_DIR = "Forward_data"
+# 兼容旧调用；新代码必须通过 program_key 解析实际程序。
+PROGRAM_EXE = get_program(DCR_3D).executable
+PARAMS_FILE = DCR_PARAMS_FILE
+PROGRAMS_DIR = "programs"
 STAGING_DIR = "staging"
 ARCHIVES_DIR = "archives"
 STDOUT_FILE = "stdout.txt"
 STDERR_FILE = "stderr.txt"
 TASK_META_FILE = "task.json"
+UPLOADED_PARAMETER_FILE = "uploaded_parameter.dat"
 
 
 def user_root(user_id: int) -> Path:
     return settings.storage_root / str(user_id)
 
 
-def program_exe_path(user_id: int) -> Path:
-    return user_root(user_id) / PROGRAM_EXE
+def programs_root(user_id: int) -> Path:
+    return user_root(user_id) / PROGRAMS_DIR
 
 
-def program_dll_path(user_id: int) -> Path:
-    return user_root(user_id) / PROGRAM_DLL
+def program_root(user_id: int, program_key: str = DCR_3D) -> Path:
+    return programs_root(user_id) / get_program(program_key).directory_name
 
 
-def params_path(user_id: int) -> Path:
-    return user_root(user_id) / PARAMS_FILE
+def program_exe_path(user_id: int, program_key: str = DCR_3D) -> Path:
+    spec = get_program(program_key)
+    return program_root(user_id, program_key) / spec.executable
 
 
-def mesh_dir(user_id: int) -> Path:
-    return user_root(user_id) / MESH_DIR
+def program_dll_path(user_id: int, program_key: str = DCR_3D) -> Path:
+    return program_root(user_id, program_key) / PROGRAM_DLL
 
 
-def mesh_path(user_id: int) -> Path:
-    return mesh_dir(user_id) / MESH_FILE
+def params_path(
+    user_id: int,
+    program_key: str = DCR_3D,
+    filename: str | None = None,
+) -> Path:
+    spec = get_program(program_key)
+    selected = filename or spec.parameter_files[0]
+    if selected not in spec.parameter_files:
+        raise ValueError(f"程序 {program_key} 不允许参数文件 {selected}")
+    return program_root(user_id, program_key) / selected
 
 
-def result_dir(user_id: int) -> Path:
-    return user_root(user_id) / RESULT_DIR
+def mesh_dir(user_id: int, program_key: str = DCR_3D) -> Path:
+    return program_root(user_id, program_key) / MESH_DIR
+
+
+def mesh_path(user_id: int, program_key: str = DCR_3D) -> Path:
+    return mesh_dir(user_id, program_key) / MESH_FILE
+
+
+def result_dir(user_id: int, program_key: str = DCR_3D) -> Path:
+    return program_root(user_id, program_key) / RESULT_DIR
 
 
 def staging_root(user_id: int) -> Path:

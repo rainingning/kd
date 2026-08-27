@@ -1,7 +1,7 @@
 """ORM 模型（T1.2），对应《需求说明书》第 6 章数据模型草案。"""
 from datetime import datetime, timezone
 
-from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Index, Integer, Numeric, String, Text
+from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -92,6 +92,29 @@ class User(Base):
     last_login_at: Mapped[datetime | None] = mapped_column(TSTZ)
 
 
+class UserProgram(Base):
+    __tablename__ = "user_programs"
+    __table_args__ = (
+        UniqueConstraint("user_id", "program_key", name="uq_user_programs_user_program"),
+        Index("ix_user_programs_program_status", "program_key", "workspace_status"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    program_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    workspace_status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default=WorkspaceStatus.ERROR)
+    workspace_error: Mapped[str | None] = mapped_column(Text)
+    program_version: Mapped[str | None] = mapped_column(String(64))
+    exe_sha256: Mapped[str | None] = mapped_column(String(64))
+    dll_sha256: Mapped[str | None] = mapped_column(String(64))
+    runtime_file_hashes: Mapped[dict | None] = mapped_column(JSONB)
+    program_synced_at: Mapped[datetime | None] = mapped_column(TSTZ)
+    program_sync_pending: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False)
+
+
 class EmailToken(Base):
     __tablename__ = "email_tokens"
 
@@ -105,9 +128,13 @@ class EmailToken(Base):
 
 class ParamTemplate(Base):
     __tablename__ = "param_templates"
+    __table_args__ = (
+        UniqueConstraint("user_id", "program_key", "name", name="uq_param_templates_user_program_name"),
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    program_key: Mapped[str] = mapped_column(String(64), nullable=False, default="dcr_3d")
     name: Mapped[str] = mapped_column(String(128), nullable=False)
     params: Mapped[dict] = mapped_column(JSONB, nullable=False)
     created_at: Mapped[datetime] = mapped_column(TSTZ, default=utcnow, nullable=False)
@@ -124,8 +151,15 @@ class Task(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default=TaskStatus.QUEUED)
+    program_key: Mapped[str] = mapped_column(String(64), nullable=False, default="dcr_3d")
+    source_type: Mapped[str | None] = mapped_column(String(32))
+    stdin_choice: Mapped[int | None] = mapped_column(Integer)
     params: Mapped[dict] = mapped_column(JSONB, nullable=False)  # 参数快照
-    input_filename: Mapped[str | None] = mapped_column(String(255))  # 原始上传文件名
+    input_filename: Mapped[str | None] = mapped_column(String(255))  # 原始 mesh 文件名
+    parameter_filename: Mapped[str | None] = mapped_column(String(255))
+    parameter_original_filename: Mapped[str | None] = mapped_column(String(255))
+    parameter_sha256: Mapped[str | None] = mapped_column(String(64))
+    runtime_file_hashes: Mapped[dict | None] = mapped_column(JSONB)
     storage_dir: Mapped[str | None] = mapped_column(String(512))  # 旧任务目录（迁移兼容）
     staging_dir: Mapped[str | None] = mapped_column(String(512))
     workspace_was_used: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

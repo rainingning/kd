@@ -5,6 +5,7 @@ from datetime import timedelta
 from sqlalchemy import select
 
 from app.models import Notification, SystemConfig, Task, TaskStatus, utcnow
+from app.scheduler import cleanup as cleanup_service
 from app.scheduler.cleanup import cleanup_expired_tasks
 from app.scheduler.dispatcher import dispatch_once
 
@@ -18,7 +19,7 @@ async def test_cleanup_removes_expired(client, auth_headers, submit_task, db_ses
 
     # old 任务的完成时间改到 40 天前（超过默认 30 天保留期）
     old = await db_session.get(Task, old_id)
-    old_dir = storage_tmp / old.storage_dir
+    old_dir = storage_tmp / old.archive_dir
     assert old_dir.exists()
     old.finished_at = utcnow() - timedelta(days=40)
     await db_session.commit()
@@ -33,7 +34,7 @@ async def test_cleanup_removes_expired(client, auth_headers, submit_task, db_ses
     # 未过期任务不受影响
     new = await db_session.get(Task, new_id)
     await db_session.refresh(new)
-    assert (storage_tmp / new.storage_dir).exists()
+    assert (storage_tmp / new.staging_dir).exists()
 
 
 async def test_cleanup_keeps_active_tasks(client, auth_headers, submit_task, db_session, storage_tmp):
@@ -68,3 +69,28 @@ async def test_cleanup_respects_retention_config(client, auth_headers, submit_ta
     await db_session.commit()
     deleted, _ = await cleanup_expired_tasks()
     assert deleted == 0
+
+
+async def test_cleanup_failure_is_marked_for_retry(
+    client, auth_headers, submit_task, db_session, storage_tmp, monkeypatch,
+):
+    headers = await auth_headers("cleanup_fail", "cleanup-fail@example.com")
+    task_id = (await submit_task(headers)).json()["id"]
+    launched = await dispatch_once()
+    await asyncio.gather(*launched)
+
+    task = await db_session.get(Task, task_id)
+    task.finished_at = utcnow() - timedelta(days=40)
+    await db_session.commit()
+
+    def fail_delete(_task):
+        raise OSError("simulated cleanup permission failure")
+
+    monkeypatch.setattr(cleanup_service, "_delete_task_files", fail_delete)
+    deleted, freed = await cleanup_expired_tasks()
+    assert deleted == 0
+    assert freed == 0
+    await db_session.refresh(task)
+    assert task.cleanup_error == "simulated cleanup permission failure"
+    assert task.cleanup_retry_count == 1
+    assert task.cleanup_retry_at is not None

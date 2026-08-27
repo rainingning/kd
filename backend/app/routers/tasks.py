@@ -1,27 +1,34 @@
 """任务提交与取消（T4.1 / T4.4）。任务查询、文件下载见 P5。"""
+import asyncio
 import json
 import logging
-import shutil
+from datetime import timedelta
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..config import settings
 from ..db import get_session
 from ..deps import get_current_user
-from ..models import Task, TaskStatus, User, utcnow
+from ..models import ArchiveStatus, Task, TaskStatus, User, WorkspaceStatus, utcnow
 from ..param_schema import ParamValidationError, serialize_params, validate_params
 from ..scheduler.runner import request_cancel
+from ..scheduler.user_lock import lock_task_submission
 from ..schemas import TaskDetailResponse, TaskListResponse, TaskResponse
+from ..services.archive import ArchiveError, archive_task_files, archive_version
 from ..services.config import get_int
-from ..services.storage import task_dir
+from ..services.storage import path_from_relative
+from ..services.staging import (
+    UploadTooLargeError,
+    create_staging,
+    remove_staging,
+    staging_relative,
+    write_staged_upload,
+    write_staging_metadata,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
-
-_CHUNK = 1024 * 1024
-
 
 @router.post("", response_model=TaskResponse, status_code=status.HTTP_201_CREATED)
 async def submit_task(
@@ -37,37 +44,133 @@ async def submit_task(
     try:
         normalized = validate_params(raw_params)
     except ParamValidationError as e:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=e.errors)
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=e.errors)
 
+    if user.workspace_status != WorkspaceStatus.READY:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "用户工作区尚未就绪，请联系管理员修复",
+        )
+
+    # 防止同一用户并发提交同时通过排队上限检查。
+    await lock_task_submission(session, user.id)
     queued_count = await session.scalar(
         select(func.count(Task.id)).where(Task.user_id == user.id, Task.status == TaskStatus.QUEUED))
     if (queued_count or 0) >= await get_int(session, "max_queued_per_user"):
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "排队任务数已达上限，请稍后再提交")
 
-    task = Task(user_id=user.id, status=TaskStatus.QUEUED,
-                params=normalized, input_filename=file.filename)
+    original_filename = (file.filename or "mesh.mphtxt").replace("\\", "/").split("/")[-1]
+    task = Task(
+        user_id=user.id,
+        status=TaskStatus.QUEUED,
+        archive_status=ArchiveStatus.PENDING,
+        params=normalized,
+        input_filename=original_filename,
+        program_version=user.program_version,
+        exe_sha256=user.exe_sha256,
+        dll_sha256=user.dll_sha256,
+    )
     session.add(task)
-    await session.flush()  # 取 task.id 用于目录命名
+    await session.flush()  # 取 task.id 用于 staging 目录命名
 
     max_bytes = (await get_int(session, "max_upload_mb")) * 1024 * 1024
-    tdir = task_dir(user.id, task.id)
-    tdir.mkdir(parents=True, exist_ok=True)
+    stage = None
     try:
-        (tdir / "params.in").write_text(serialize_params(normalized), encoding="utf-8")
-        size = 0
-        with open(tdir / "input.dat", "wb") as f:
-            while chunk := await file.read(_CHUNK):
-                size += len(chunk)
-                if size > max_bytes:
-                    raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "文件超过大小上限")
-                f.write(chunk)
+        stage = await asyncio.to_thread(
+            create_staging, user.id, task.id, serialize_params(normalized))
+        size = await write_staged_upload(stage, file, max_bytes=max_bytes)
+        await asyncio.to_thread(write_staging_metadata, stage, {
+            "task_id": task.id,
+            "user_id": user.id,
+            "original_input_filename": original_filename,
+            "params": normalized,
+            "queued_at": task.queued_at.isoformat() if task.queued_at else utcnow().isoformat(),
+            "input_size_bytes": size,
+        })
+        task.staging_dir = staging_relative(user.id, task.id)
+    except UploadTooLargeError as exc:
+        if stage is not None:
+            await asyncio.to_thread(remove_staging, stage)
+        await session.rollback()
+        raise HTTPException(status.HTTP_413_CONTENT_TOO_LARGE, str(exc)) from exc
     except Exception:
-        shutil.rmtree(tdir, ignore_errors=True)
+        if stage is not None:
+            await asyncio.to_thread(remove_staging, stage)
         await session.rollback()
         raise
 
-    task.storage_dir = f"{user.id}/{task.id}"
     await session.commit()
+    logger.info(
+        "任务 #%s 暂存完成：user=%s input=%s bytes=%s staging=%s",
+        task.id, user.id, original_filename, size, task.staging_dir,
+    )
+    return task
+
+
+async def _archive_queued_task(
+    task: Task,
+    session: AsyncSession,
+    *,
+    final_status: str,
+    reason: str,
+) -> Task:
+    """未进入固定工作区的排队任务从 staging 直接归档。"""
+    stage = path_from_relative(task.staging_dir)
+    task.status = TaskStatus.ARCHIVING
+    task.archive_status = ArchiveStatus.ARCHIVING
+    task.terminal_status = final_status
+    task.workspace_was_used = False
+    task.archive_version = task.archive_version or archive_version(task.id)
+    task.error_message = reason
+    finished = utcnow()
+    await session.commit()
+    try:
+        archived = await asyncio.to_thread(
+            archive_task_files,
+            user_id=task.user_id,
+            task_id=task.id,
+            staging=stage,
+            metadata={
+                "task_id": task.id,
+                "user_id": task.user_id,
+                "original_input_filename": task.input_filename,
+                "params": task.params,
+                "status": final_status,
+                "reason": reason,
+                "exit_code": task.exit_code,
+                "queued_at": task.queued_at.isoformat() if task.queued_at else None,
+                "started_at": task.started_at.isoformat() if task.started_at else None,
+                "finished_at": finished.isoformat(),
+                "duration_sec": None,
+                "program_version": task.program_version,
+                "exe_sha256": task.exe_sha256,
+                "dll_sha256": task.dll_sha256,
+            },
+            workspace_was_used=False,
+            version=task.archive_version,
+        )
+    except ArchiveError as exc:
+        task.status = TaskStatus.ARCHIVE_FAILED
+        task.archive_status = ArchiveStatus.FAILED
+        task.archive_error = str(exc)
+        task.archive_retry_count = (task.archive_retry_count or 0) + 1
+        delay = min(5 * (2 ** (task.archive_retry_count - 1)), 300)
+        task.archive_retry_at = utcnow() + timedelta(seconds=delay)
+        await session.commit()
+        return task
+
+    task.status = final_status
+    task.archive_status = ArchiveStatus.COMPLETED
+    task.archive_error = None
+    task.archive_retry_at = None
+    task.archive_version = archived.version
+    task.archive_dir = archived.relative_dir
+    task.archived_at = archived.archived_at
+    task.result_file_count = archived.result_file_count
+    task.result_size_bytes = archived.result_size_bytes
+    task.finished_at = finished
+    await session.commit()
+    await asyncio.to_thread(remove_staging, stage)
     return task
 
 
@@ -82,21 +185,12 @@ async def cancel_task(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "任务不存在")
 
     if task.status == TaskStatus.QUEUED:
-        task.status = TaskStatus.CANCELED
-        task.error_message = "用户取消"
-        task.finished_at = utcnow()
-        await session.commit()
-        return task
+        return await _archive_queued_task(
+            task, session, final_status=TaskStatus.CANCELED, reason="用户取消")
 
-    if task.status == TaskStatus.RUNNING:
-        if request_cancel(task_id, kind="user"):
-            return task  # runner 负责落终态 CANCELED，前端轮询获取
-        # 已分发但进程未注册的竞态窗口：直接置取消，runner 启动时发现状态非 RUNNING 会跳过
-        task.status = TaskStatus.CANCELED
-        task.error_message = "用户取消"
-        task.finished_at = utcnow()
-        await session.commit()
-        return task
+    if task.status in (TaskStatus.PREPARING, TaskStatus.RUNNING):
+        request_cancel(task_id, kind="user")
+        return task  # runner 在启动前或进程退出后负责归档并落 CANCELED
 
     raise HTTPException(status.HTTP_409_CONFLICT, "任务已结束，不能取消")
 

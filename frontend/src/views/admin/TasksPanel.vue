@@ -5,10 +5,17 @@
       <span class="text-muted tip">每 5 秒自动刷新</span>
     </div>
 
-    <el-divider content-position="left">运行中任务（{{ running.length }}）</el-divider>
+    <el-divider content-position="left">活动任务（{{ running.length }}）</el-divider>
     <el-table :data="running" border size="small">
       <el-table-column prop="id" label="ID" width="80" />
       <el-table-column prop="username" label="用户" width="140" />
+      <el-table-column label="状态" width="120">
+        <template #default="{ row }">
+          <el-tag :type="TASK_STATUS[row.status]?.type || 'info'" size="small">
+            {{ TASK_STATUS[row.status]?.label || row.status }}
+          </el-tag>
+        </template>
+      </el-table-column>
       <el-table-column label="输入文件" min-width="180" show-overflow-tooltip>
         <template #default="{ row }">{{ row.input_filename || '—' }}</template>
       </el-table-column>
@@ -20,10 +27,17 @@
       </el-table-column>
       <el-table-column label="操作" width="110" fixed="right">
         <template #default="{ row }">
-          <el-button size="small" type="danger" plain @click="onKill(row)">终止</el-button>
+          <el-button
+            v-if="['PREPARING', 'RUNNING'].includes(row.status)"
+            size="small"
+            type="danger"
+            plain
+            @click="onKill(row)"
+          >终止</el-button>
+          <span v-else class="text-muted">归档中</span>
         </template>
       </el-table-column>
-      <template #empty>暂无运行中任务</template>
+      <template #empty>暂无活动任务</template>
     </el-table>
 
     <el-divider content-position="left">等待队列（{{ queued.length }}）</el-divider>
@@ -53,7 +67,7 @@
 import { onMounted, onUnmounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { adminApi } from '../../api/admin'
-import { elapsedSince, formatTime } from '../../utils/format'
+import { elapsedSince, formatTime, TASK_STATUS } from '../../utils/format'
 
 const running = ref([])
 const queued = ref([])

@@ -5,6 +5,7 @@
 纯单元测试（如参数校验）无需数据库即可运行。
 """
 import asyncio
+import json
 
 import pytest
 import pytest_asyncio
@@ -19,7 +20,7 @@ from app.db import Base
 from app.main import app
 from app.models import EmailToken, TokenType
 
-TEST_URL = make_url(settings.database_url).set(database="fortran_platform_test").render_as_string(hide_password=False)
+TEST_URL = make_url(settings.database_url).set(database="fortran_platform_test")
 
 
 @pytest.fixture(scope="session")
@@ -50,8 +51,33 @@ def _clean_tables(_prepare_database):
     asyncio.run(_clean())
 
 
+@pytest.fixture
+def workspace_env(tmp_path, monkeypatch):
+    """为涉及 API 的测试准备可信程序模板和隔离 storage。"""
+    from app.services.program_template import sha256_file
+
+    storage = tmp_path / "storage"
+    template = tmp_path / "program-template"
+    template.mkdir()
+    exe = template / "DCR_3D.exe"
+    dll = template / "libiomp5md.dll"
+    exe.write_bytes(b"test-dcr3d-exe")
+    dll.write_bytes(b"test-openmp-dll")
+    (template / "program-manifest.json").write_text(json.dumps({
+        "version": "test-1.0.0",
+        "exe": exe.name,
+        "dll": dll.name,
+        "exe_sha256": sha256_file(exe),
+        "dll_sha256": sha256_file(dll),
+    }), encoding="utf-8")
+    monkeypatch.setattr(settings, "storage_root", storage)
+    monkeypatch.setattr(settings, "result_zip_cache_root", storage / ".zip-cache")
+    monkeypatch.setattr(settings, "fortran_program_template_dir", template)
+    return storage
+
+
 @pytest_asyncio.fixture
-async def client(_clean_tables):
+async def client(_clean_tables, workspace_env):
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c
 
@@ -83,11 +109,9 @@ async def auth_headers(client, db_session):
 
 
 @pytest.fixture
-def storage_tmp(tmp_path, monkeypatch):
+def storage_tmp(workspace_env):
     """任务文件写到临时目录，不污染仓库 storage/。"""
-    from app.config import settings
-    monkeypatch.setattr(settings, "storage_root", tmp_path)
-    return tmp_path
+    return workspace_env
 
 
 @pytest_asyncio.fixture

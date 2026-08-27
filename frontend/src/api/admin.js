@@ -15,6 +15,13 @@ export const adminApi = {
   resetUserPassword: (id) => http.post(`/admin/users/${id}/reset-password`),
   disableUser: (id) => http.post(`/admin/users/${id}/disable`),
   enableUser: (id) => http.post(`/admin/users/${id}/enable`),
+  programTemplate: () => http.get('/admin/program-template'),
+  programSyncStatus: () => http.get('/admin/program-sync/status'),
+  syncAllPrograms: () => http.post('/admin/program-sync'),
+  syncUserProgram: (id) => http.post(`/admin/users/${id}/program-sync`),
+  checkUserWorkspace: (id) => http.post(`/admin/users/${id}/workspace-check`),
+  archiveFailures: () => http.get('/admin/tasks/archive-failures'),
+  retryArchive: (id) => http.post(`/admin/tasks/${id}/archive-retry`),
   getConfig: () => http.get('/admin/config'),
   updateConfig: (config) => http.put('/admin/config', { config }),
   auditLogs: ({ action, page, pageSize } = {}) =>

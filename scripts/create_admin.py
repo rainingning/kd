@@ -15,11 +15,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 from sqlalchemy import or_, select  # noqa: E402
 
 from app.db import async_session  # noqa: E402
-from app.models import User, UserRole, UserStatus  # noqa: E402
+from app.models import User, UserRole, UserStatus, WorkspaceStatus, utcnow  # noqa: E402
 from app.security import hash_password  # noqa: E402
+from app.services.workspace import WorkspaceError, initialize_workspace  # noqa: E402
 
 
 async def main() -> int:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description="创建管理员账号")
     parser.add_argument("username")
     parser.add_argument("email")
@@ -37,11 +40,24 @@ async def main() -> int:
         if exists is not None:
             print("错误：用户名或邮箱已存在")
             return 1
-        session.add(User(
+        user = User(
             username=args.username, email=args.email,
             password_hash=hash_password(password),
             role=UserRole.ADMIN, status=UserStatus.ACTIVE,
-        ))
+        )
+        session.add(user)
+        await session.flush()
+        try:
+            manifest = await asyncio.to_thread(initialize_workspace, user.id)
+        except WorkspaceError as exc:
+            await session.rollback()
+            print(f"错误：用户工作区初始化失败：{exc}")
+            return 1
+        user.workspace_status = WorkspaceStatus.READY
+        user.program_version = manifest.version
+        user.exe_sha256 = manifest.exe_sha256
+        user.dll_sha256 = manifest.dll_sha256
+        user.program_synced_at = utcnow()
         await session.commit()
     print(f"管理员 {args.username} 创建成功")
     return 0

@@ -30,6 +30,13 @@ class UserResponse(BaseModel):
     email: str
     role: str
     status: str
+    workspace_status: str
+    workspace_error: str | None
+    program_version: str | None
+    exe_sha256: str | None
+    dll_sha256: str | None
+    program_synced_at: datetime | None
+    program_sync_pending: bool
     created_at: datetime
     last_login_at: datetime | None
 
@@ -83,6 +90,22 @@ class TaskResponse(BaseModel):
     status: str
     params: dict
     input_filename: str | None
+    workspace_was_used: bool
+    archive_status: str
+    terminal_status: str | None
+    archive_version: str | None
+    archive_error: str | None
+    archive_retry_count: int
+    archive_retry_at: datetime | None
+    archived_at: datetime | None
+    program_version: str | None
+    exe_sha256: str | None
+    dll_sha256: str | None
+    result_file_count: int | None
+    result_size_bytes: int | None
+    cleanup_error: str | None
+    cleanup_retry_count: int
+    cleanup_retry_at: datetime | None
     exit_code: int | None
     error_message: str | None
     queued_at: datetime

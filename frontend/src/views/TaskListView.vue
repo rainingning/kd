@@ -44,7 +44,7 @@
           <template #default="{ row }">
             <el-button size="small" @click.stop="goDetail(row)">详情</el-button>
             <el-button
-              v-if="isActiveStatus(row.status)"
+              v-if="isCancelableStatus(row.status)"
               size="small"
               type="danger"
               plain
@@ -79,7 +79,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh } from '@element-plus/icons-vue'
 import StatusTag from '../components/StatusTag.vue'
 import { taskApi } from '../api/tasks'
-import { TASK_STATUS, formatDuration, formatTime, isActiveStatus } from '../utils/format'
+import { TASK_STATUS, formatDuration, formatTime, isCancelableStatus } from '../utils/format'
 
 const router = useRouter()
 

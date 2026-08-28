@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from ..deps import get_current_user
 from ..models import User
 from ..param_schema import get_schema
+from ..em_param_schema import get_parameter_schema
 from ..services.programs import DCR_3D, get_program, list_programs
 
 router = APIRouter(prefix="/api", tags=["params"])
@@ -46,14 +47,17 @@ async def param_schema(
         return {**get_schema(), "program_key": program_key, "parameter_mode": "structured"}
     return {
         "program_key": program_key,
-        "parameter_mode": "upload",
-        "fields": [],
+        "parameter_mode": spec.parameter_mode,
         "source_choices": [
             {
                 "source_type": choice.source_type,
                 "value": choice.stdin_choice,
                 "filename": choice.filename,
                 "label": choice.label,
+                "schema_version": get_parameter_schema(
+                    program_key, choice.source_type).schema_version,
+                "encoding": get_parameter_schema(
+                    program_key, choice.source_type).encoding,
             }
             for choice in spec.source_choices
         ],

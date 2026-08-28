@@ -16,6 +16,7 @@ from sqlalchemy import select
 
 from .. import db
 from ..config import settings
+from ..em_param_schema import ParamValidationError as EmParamValidationError
 from ..models import (
     ArchiveStatus,
     NotificationType,
@@ -31,6 +32,10 @@ from ..services.archive import (
 )
 from ..services.config import get_float, get_int
 from ..services.dcr_params import DcrParamsError, restore_runtime_from_canonical
+from ..services.program_params import (
+    ProgramParamsError,
+    restore_runtime_from_canonical as restore_source_runtime_from_canonical,
+)
 from ..services.notifications import notify
 from ..services.program_sync import sync_program_for_locked_user
 from ..services.program_template import ProgramTemplateError, validate_program_template
@@ -280,19 +285,29 @@ async def finalize_task(
     return True
 
 
-async def _restore_dcr_current(user_id: int, task_id: int) -> str | None:
-    """调用方持有用户锁；失败时阻断工作区并返回可归档的错误文本。"""
+async def _restore_program_current(
+    user_id: int,
+    program_key: str,
+    task_id: int,
+) -> str | None:
+    """调用方持有用户锁；恢复程序当前参数，失败时阻断工作区。"""
     try:
-        await asyncio.to_thread(restore_runtime_from_canonical, user_id)
+        if program_key == DCR_3D:
+            await asyncio.to_thread(restore_runtime_from_canonical, user_id)
+        elif get_program(program_key).parameter_mode == "source-structured":
+            await asyncio.to_thread(
+                restore_source_runtime_from_canonical, user_id, program_key)
         return None
-    except (DcrParamsError, OSError, ValueError) as exc:
-        message = f"恢复当前 model_DC.dat 失败：{exc}"
+    except (
+        DcrParamsError, ProgramParamsError, EmParamValidationError, OSError, ValueError,
+    ) as exc:
+        message = f"恢复 {get_program(program_key).display_name} 当前参数失败：{exc}"
         logger.exception("任务 #%s %s", task_id, message)
         async with db.async_session() as session:
             user = await session.get(User, user_id)
             installation = await session.scalar(select(UserProgram).where(
                 UserProgram.user_id == user_id,
-                UserProgram.program_key == DCR_3D,
+                UserProgram.program_key == program_key,
             ))
             if user is not None:
                 user.workspace_status = WorkspaceStatus.ERROR
@@ -334,8 +349,8 @@ async def _prepare(task_id: int) -> tuple[int, Path, str, int | None] | None:
             )
         except (OSError, ValueError, WorkspaceError) as exc:
             await session.rollback()
-            if task.program_key == DCR_3D:
-                await _restore_dcr_current(task.user_id, task.id)
+            if get_program(task.program_key).uses_current_params:
+                await _restore_program_current(task.user_id, task.program_key, task.id)
             await finalize_task(
                 task_id, final_status=TaskStatus.FAILED,
                 reason=f"工作区准备失败：{exc}", workspace_was_used=False)
@@ -517,8 +532,8 @@ async def run_task(task_id: int) -> None:
             # 进程注册前收到取消请求，不再启动程序。
             entry = None
 
-        if program_key == DCR_3D:
-            restore_error = await _restore_dcr_current(user_id, task_id)
+        if get_program(program_key).uses_current_params:
+            restore_error = await _restore_program_current(user_id, program_key, task_id)
             if restore_error is not None:
                 start_error = restore_error
 
@@ -588,8 +603,8 @@ async def recover_task(task_id: int) -> None:
             workspace_was_used = True
         else:
             workspace_was_used = task.workspace_was_used
-        if task.program_key == DCR_3D and workspace_was_used:
-            restore_error = await _restore_dcr_current(user_id, task_id)
+        if get_program(task.program_key).uses_current_params and workspace_was_used:
+            restore_error = await _restore_program_current(user_id, task.program_key, task_id)
             if restore_error is not None:
                 final_status = TaskStatus.FAILED
                 reason = restore_error if not reason else f"{reason}；{restore_error}"

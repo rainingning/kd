@@ -12,6 +12,7 @@ from sqlalchemy import func, select
 
 from app.models import Notification, NotificationType, SystemConfig, Task, TaskStatus, User
 from app.param_schema import SCHEMA_VERSION, parse_params
+from app.em_param_schema import parse_parameter_bytes, schema_version_for
 from app.scheduler import runner as runner_service
 from app.scheduler.dispatcher import dispatch_once, recover_interrupted_tasks
 from app.services.program_template import ProgramTemplateError
@@ -63,19 +64,24 @@ async def test_submit_success(client, auth_headers, db_session, storage_tmp):
     ("fdem3d_frequency_domain", 1, "GroundedWireSource.dat"),
     ("fdem3d_frequency_domain", 2, "LoopSource.dat"),
 ])
-async def test_uploaded_parameter_program_stdin_and_archive(
+async def test_current_parameter_program_stdin_snapshot_and_archive(
     client, auth_headers, db_session, storage_tmp,
     program_key, choice, selected_name,
 ):
     headers = await auth_headers(f"u_{program_key[:8]}_{choice}", f"{program_key[:8]}-{choice}@example.com")
-    payload = f"custom-{program_key}-{choice}\n".encode()
+    source_type = "grounded_wire" if choice == 1 else "loop"
+    current = (await client.get(
+        f"/api/program-params/{program_key}/{source_type}/current", headers=headers,
+    )).json()
     resp = await client.post(
         "/api/tasks",
-        data={"program_key": program_key, "params": "{}", "stdin_choice": str(choice)},
-        files={
-            "file": ("mesh.mphtxt", b"mesh-data"),
-            "parameter_file": (selected_name, payload, "application/octet-stream"),
+        data={
+            "program_key": program_key,
+            "params": "{}",
+            "stdin_choice": str(choice),
+            "parameter_sha256": current["sha256"],
         },
+        files={"file": ("mesh.mphtxt", b"mesh-data")},
         headers=headers,
     )
     assert resp.status_code == 201, resp.text
@@ -83,18 +89,21 @@ async def test_uploaded_parameter_program_stdin_and_archive(
     assert body["program_key"] == program_key
     assert body["stdin_choice"] == choice
     assert body["parameter_filename"] == selected_name
+    assert body["parameter_schema_version"] == schema_version_for(program_key)
+    assert body["parameter_sha256"] == current["sha256"]
 
     launched = await dispatch_once()
     await asyncio.gather(*launched)
     task = await _task(db_session, body["id"])
     assert task.status == TaskStatus.COMPLETED
     archive = storage_tmp / task.archive_dir
-    assert (archive / selected_name).read_bytes() == payload
+    assert parse_parameter_bytes(program_key, source_type, (archive / selected_name).read_bytes()) == current["document"]
     assert (archive / "GroundedWireSource.dat").is_file()
     assert (archive / "LoopSource.dat").is_file()
     assert f"choice {choice}" in (archive / "stdout.txt").read_text()
     metadata = json.loads((archive / "task.json").read_text(encoding="utf-8"))
     assert metadata["stdin_choice"] == choice
+    assert metadata["parameter_schema_version"] == schema_version_for(program_key)
     assert set(metadata["runtime_file_hashes"]) == {
         "GroundedWireSource.dat", "LoopSource.dat",
     }
@@ -112,6 +121,21 @@ async def test_new_program_rejects_missing_or_invalid_choice(client, auth_header
         data={"program_key": "be_fetd", "params": "{}", "stdin_choice": "3"},
         files={**base_files, "parameter_file": ("x.dat", b"x")}, headers=headers)
     assert invalid.status_code == 422
+    no_hash = await client.post(
+        "/api/tasks",
+        data={"program_key": "be_fetd", "params": "{}", "stdin_choice": "1"},
+        files=base_files, headers=headers)
+    assert no_hash.status_code == 422
+    legacy_upload = await client.post(
+        "/api/tasks",
+        data={
+            "program_key": "be_fetd", "params": "{}", "stdin_choice": "1",
+            "parameter_sha256": "0" * 64,
+        },
+        files={**base_files, "parameter_file": ("GroundedWireSource.dat", b"x")},
+        headers=headers,
+    )
+    assert legacy_upload.status_code == 422
 
 
 async def test_submit_rejects_legacy_inline_dcr_params(client, auth_headers, storage_tmp):

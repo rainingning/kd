@@ -1,12 +1,12 @@
 {
   "program_key": "be_fetd",
-  "version": "mock-trial-2.0.0",
+  "version": "mock-trial-4.0.0",
   "exe": "BE_FETD.exe",
   "dll": "libiomp5md.dll",
   "exe_sha256": "3eff5a6f4c4009002987245262de20a7801510d9e920e239060c1880aa65a750",
   "dll_sha256": "e0221a75f5981dbe59eb301a49cff37e973f4ee76999df8732a562251e01c658",
   "parameter_sha256": {
-    "GroundedWireSource.dat": "c29181decd39cc2ad5885f943687d81d670f6194365771c3d574029976567879",
-    "LoopSource.dat": "bc73a06cb62348635e470a528a72ea4b85f63e5f8e35969f00b94f6100000583"
+    "GroundedWireSource.dat": "1d46c26838b734baeb879969df19fa9c287373ddffbcd6f2cdf371c195ee82aa",
+    "LoopSource.dat": "e88b3c995c260acdafd7cd61d236b37950b6ce1ffe0c86af45b1b07c31eea646"
   }
 }

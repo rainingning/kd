@@ -6,6 +6,8 @@
 """
 import asyncio
 import json
+import shutil
+from pathlib import Path
 
 import pytest
 import pytest_asyncio
@@ -72,7 +74,11 @@ def workspace_env(tmp_path, monkeypatch):
         exe.write_bytes(f"test-{program_key}-exe".encode())
         dll.write_bytes(b"test-openmp-dll")
         parameter_sha256 = {}
-        if program_key != "dcr_3d":
+        if program_key == "dcr_3d":
+            path = root / "model_DC.dat"
+            shutil.copy2(Path(__file__).resolve().parents[2] / "docs" / "model_DC.dat", path)
+            parameter_sha256[path.name] = sha256_file(path)
+        else:
             for filename in ("GroundedWireSource.dat", "LoopSource.dat"):
                 path = root / filename
                 path.write_text(f"default {program_key} {filename}\n", encoding="utf-8")
@@ -136,10 +142,9 @@ async def submit_task(client):
     import json as _json
 
     async def _submit(headers, params=None, data=b"1,2,3\n4,5,6\n", filename="data.csv"):
-        params = params if params is not None else {"grid_size": 10, "mock_sleep": 0}
         return await client.post(
             "/api/tasks",
-            data={"params": _json.dumps(params)},
+            data={"params": "{}"},
             files={"file": (filename, data)},
             headers=headers,
         )

@@ -137,6 +137,8 @@ class ParamTemplate(Base):
     program_key: Mapped[str] = mapped_column(String(64), nullable=False, default="dcr_3d")
     name: Mapped[str] = mapped_column(String(128), nullable=False)
     params: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    parameter_schema_version: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="dcr-model-v1")
     created_at: Mapped[datetime] = mapped_column(TSTZ, default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(TSTZ, default=utcnow, onupdate=utcnow, nullable=False)
 
@@ -155,6 +157,7 @@ class Task(Base):
     source_type: Mapped[str | None] = mapped_column(String(32))
     stdin_choice: Mapped[int | None] = mapped_column(Integer)
     params: Mapped[dict] = mapped_column(JSONB, nullable=False)  # 参数快照
+    parameter_schema_version: Mapped[str | None] = mapped_column(String(32))
     input_filename: Mapped[str | None] = mapped_column(String(255))  # 原始 mesh 文件名
     parameter_filename: Mapped[str | None] = mapped_column(String(255))
     parameter_original_filename: Mapped[str | None] = mapped_column(String(255))

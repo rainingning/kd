@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from .config import settings
-from .routers import admin, auth, files, notifications, params, tasks, templates, users
+from .routers import admin, auth, dcr_params, files, notifications, params, tasks, templates, users
 from .db import async_session
 from .scheduler.cleanup import cleanup_loop, stop_cleanup
 from .scheduler.dispatcher import dispatch_loop, recover_interrupted_tasks, shutdown_scheduler
@@ -48,6 +48,7 @@ app = FastAPI(title="Fortran 科学计算平台", version="0.1.0", lifespan=life
 app.include_router(auth.router)
 app.include_router(users.router)
 app.include_router(params.router)
+app.include_router(dcr_params.router)
 app.include_router(templates.router)
 app.include_router(tasks.router)
 app.include_router(files.router)

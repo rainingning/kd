@@ -10,6 +10,7 @@
 
       <el-table v-loading="loading" :data="items" border>
         <el-table-column prop="name" label="模板名称" min-width="200" />
+        <el-table-column label="格式" width="140"><template #default="{ row }"><el-tag :type="row.parameter_schema_version === 'dcr-model-v1' ? 'success' : 'info'">{{ row.parameter_schema_version === 'dcr-model-v1' ? '真实 DCR' : '旧占位格式' }}</el-tag></template></el-table-column>
         <el-table-column label="更新时间" width="200">
           <template #default="{ row }">{{ formatTime(row.updated_at) }}</template>
         </el-table-column>
@@ -18,7 +19,7 @@
         </el-table-column>
         <el-table-column label="操作" width="180" fixed="right">
           <template #default="{ row }">
-            <el-button size="small" @click="openEdit(row)">编辑</el-button>
+            <el-button size="small" :disabled="row.parameter_schema_version !== 'dcr-model-v1'" @click="openEdit(row)">编辑</el-button>
             <el-button size="small" type="danger" plain @click="onDelete(row)">删除</el-button>
           </template>
         </el-table-column>
@@ -29,7 +30,7 @@
     <el-dialog
       v-model="dialogVisible"
       :title="editing ? '编辑模板' : '新建模板'"
-      width="640px"
+      width="min(1200px, 96vw)"
       destroy-on-close
     >
       <el-form label-position="top">
@@ -37,7 +38,7 @@
           <el-input v-model="formName" placeholder="请输入模板名称" maxlength="128" />
         </el-form-item>
       </el-form>
-      <ParamForm ref="paramFormRef" v-model="formParams" />
+      <DcrParamForm ref="paramFormRef" v-model="formParams" />
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
         <el-button type="primary" :loading="saving" @click="onSave">保存</el-button>
@@ -49,7 +50,8 @@
 <script setup>
 import { onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import ParamForm from '../components/ParamForm.vue'
+import DcrParamForm from '../components/DcrParamForm.vue'
+import { dcrParamsApi } from '../api/dcrParams'
 import { templateApi } from '../api/templates'
 import { formatTime } from '../utils/format'
 
@@ -77,19 +79,24 @@ async function load() {
   }
 }
 
-function openCreate() {
+async function openCreate() {
   editing.value = null
   formName.value = ''
   nameError.value = ''
-  formParams.value = {}
+  const defaults = await dcrParamsApi.defaults()
+  formParams.value = JSON.parse(JSON.stringify(defaults.document))
   dialogVisible.value = true
 }
 
 function openEdit(row) {
+  if (row.parameter_schema_version !== 'dcr-model-v1') {
+    ElMessage.info('升级前的旧占位模板不可编辑，但仍可删除')
+    return
+  }
   editing.value = row
   formName.value = row.name
   nameError.value = ''
-  formParams.value = { ...row.params }
+  formParams.value = JSON.parse(JSON.stringify(row.params))
   dialogVisible.value = true
 }
 

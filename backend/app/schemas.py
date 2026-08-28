@@ -80,8 +80,17 @@ class TemplateResponse(BaseModel):
     name: str
     program_key: str
     params: dict
+    parameter_schema_version: str
     created_at: datetime
     updated_at: datetime
+
+
+# ---- DCR 当前参数 ----
+
+class DcrParamsSaveRequest(BaseModel):
+    document: dict
+    expected_sha256: str = Field(pattern=r"^[0-9a-fA-F]{64}$")
+    source_task_id: int | None = Field(default=None, gt=0)
 
 
 # ---- 任务 ----
@@ -95,6 +104,7 @@ class TaskResponse(BaseModel):
     source_type: str | None
     stdin_choice: int | None
     params: dict
+    parameter_schema_version: str | None
     input_filename: str | None
     parameter_filename: str | None
     parameter_original_filename: str | None

@@ -116,7 +116,7 @@ def load_program_manifest(
     if manifest.exe != spec.executable or manifest.dll != PROGRAM_DLL:
         raise ProgramTemplateError(
             f"{program_key} 模板文件名必须为 {spec.executable} 和 {PROGRAM_DLL}")
-    expected_parameters = set(spec.parameter_files if spec.parameter_mode == "upload" else ())
+    expected_parameters = set(spec.parameter_files)
     if set(manifest.parameter_sha256) != expected_parameters:
         raise ProgramTemplateError(
             f"{program_key} 默认参数文件必须为：{', '.join(sorted(expected_parameters)) or '无'}")

@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..db import get_session
 from ..deps import get_current_user
 from ..models import ParamTemplate, User
-from ..param_schema import ParamValidationError, validate_params
+from ..param_schema import SCHEMA_VERSION, ParamValidationError, validate_params
 from ..schemas import TemplateCreate, TemplateResponse, TemplateUpdate
 from ..services.programs import DCR_3D
 
@@ -75,6 +75,7 @@ async def create_template(
     tpl = ParamTemplate(
         user_id=user.id, program_key=body.program_key,
         name=body.name, params=normalized,
+        parameter_schema_version=SCHEMA_VERSION,
     )
     session.add(tpl)
     await session.commit()
@@ -97,6 +98,7 @@ async def update_template(
         tpl.name = body.name
     if body.params is not None:
         tpl.params = _validate_or_422(body.params)
+        tpl.parameter_schema_version = SCHEMA_VERSION
     await session.commit()
     return tpl
 

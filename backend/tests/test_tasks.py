@@ -4,16 +4,18 @@
 """
 import asyncio
 import json
+import sys
 from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import func, select
 
 from app.models import Notification, NotificationType, SystemConfig, Task, TaskStatus, User
+from app.param_schema import SCHEMA_VERSION, parse_params
 from app.scheduler import runner as runner_service
 from app.scheduler.dispatcher import dispatch_once, recover_interrupted_tasks
 from app.services.program_template import ProgramTemplateError
-from app.services.storage import path_from_relative
+from app.services.storage import canonical_params_path, params_path, path_from_relative
 from app.services.workspace import prepare_task_workspace
 
 
@@ -23,10 +25,9 @@ async def _set_config(db_session, key, value):
 
 
 async def _submit(client, headers, params=None, data=b"1,2,3\n4,5,6\n", filename="data.csv"):
-    params = params if params is not None else {"grid_size": 10, "mock_sleep": 0}
     return await client.post(
         "/api/tasks",
-        data={"params": json.dumps(params)},
+        data={"params": json.dumps(params) if params is not None else "{}"},
         files={"file": (filename, data)},
         headers=headers,
     )
@@ -47,11 +48,12 @@ async def test_submit_success(client, auth_headers, db_session, storage_tmp):
     body = resp.json()
     assert body["status"] == "QUEUED"
     assert body["input_filename"] == "data.csv"
-    assert body["params"]["grid_size"] == 10
+    assert body["params"]["boundary_mode"] == 1
+    assert body["parameter_schema_version"] == SCHEMA_VERSION
 
     stages = list(storage_tmp.glob("*/staging/*"))
     assert len(stages) == 1
-    assert json.loads((stages[0] / "model_DC.dat").read_text())["grid_size"] == 10
+    assert parse_params((stages[0] / "model_DC.dat").read_text())["boundary_mode"] == 1
     assert (stages[0] / "mesh.mphtxt").read_bytes() == b"1,2,3\n4,5,6\n"
 
 
@@ -112,11 +114,11 @@ async def test_new_program_rejects_missing_or_invalid_choice(client, auth_header
     assert invalid.status_code == 422
 
 
-async def test_submit_invalid_params(client, auth_headers, storage_tmp):
+async def test_submit_rejects_legacy_inline_dcr_params(client, auth_headers, storage_tmp):
     headers = await auth_headers("dave", "dave@example.com")
     resp = await _submit(client, headers, params={"grid_size": -1})
     assert resp.status_code == 422
-    assert "grid_size" in resp.json()["detail"]
+    assert "DCR 参数" in resp.json()["detail"]
 
 
 async def test_submit_bad_json(client, auth_headers, storage_tmp):
@@ -233,10 +235,12 @@ async def test_sequential_tasks_preserve_immutable_archives(
     ).read_bytes() == b"second-mesh"
 
 
-async def test_run_failure_nonzero_exit(client, auth_headers, db_session, storage_tmp):
+async def test_run_failure_nonzero_exit(client, auth_headers, db_session, storage_tmp, monkeypatch):
+    monkeypatch.setattr(runner_service, "build_argv", lambda *_: [
+        sys.executable, "-c", "import sys;sys.stderr.write('failed');sys.exit(1)",
+    ])
     headers = await auth_headers("dave", "dave@example.com")
-    task_id = (await _submit(client, headers,
-                             params={"grid_size": 10, "mock_sleep": 0, "mock_exit_code": 1})).json()["id"]
+    task_id = (await _submit(client, headers)).json()["id"]
     launched = await dispatch_once()
     await asyncio.gather(*launched)
 
@@ -252,17 +256,20 @@ async def test_run_failure_nonzero_exit(client, auth_headers, db_session, storag
     assert note.type == NotificationType.FAILED
 
 
-async def test_run_timeout(client, auth_headers, db_session, storage_tmp):
+async def test_run_timeout(client, auth_headers, db_session, storage_tmp, monkeypatch):
     await _set_config(db_session, "task_timeout_minutes", 0.02)  # 1.2 秒
+    monkeypatch.setattr(runner_service, "build_argv", lambda *_: [
+        sys.executable, "-c", "import time;time.sleep(30)",
+    ])
     headers = await auth_headers("dave", "dave@example.com")
-    task_id = (await _submit(client, headers,
-                             params={"grid_size": 10, "mock_sleep": 30})).json()["id"]
+    task_id = (await _submit(client, headers)).json()["id"]
     launched = await dispatch_once()
     await asyncio.gather(*launched)
 
     task = await _task(db_session, task_id)
     assert task.status == TaskStatus.FAILED
     assert "超时" in task.error_message
+    assert params_path(task.user_id).read_bytes() == canonical_params_path(task.user_id).read_bytes()
 
 
 # ---- T4.4 取消 ----
@@ -286,10 +293,12 @@ async def test_cancel_queued(client, auth_headers, db_session, storage_tmp):
         assert key in metadata
 
 
-async def test_cancel_running(client, auth_headers, db_session, storage_tmp):
+async def test_cancel_running(client, auth_headers, db_session, storage_tmp, monkeypatch):
+    monkeypatch.setattr(runner_service, "build_argv", lambda *_: [
+        sys.executable, "-c", "import time;time.sleep(30)",
+    ])
     headers = await auth_headers("dave", "dave@example.com")
-    task_id = (await _submit(client, headers,
-                             params={"grid_size": 10, "mock_sleep": 30})).json()["id"]
+    task_id = (await _submit(client, headers)).json()["id"]
     launched = await dispatch_once()
     await asyncio.sleep(0.3)  # 等进程起来
     resp = await client.post(f"/api/tasks/{task_id}/cancel", headers=headers)
@@ -299,6 +308,7 @@ async def test_cancel_running(client, auth_headers, db_session, storage_tmp):
     task = await _task(db_session, task_id)
     assert task.status == TaskStatus.CANCELED
     assert task.error_message == "用户取消"
+    assert params_path(task.user_id).read_bytes() == canonical_params_path(task.user_id).read_bytes()
 
 
 async def test_cancel_finished_conflict(client, auth_headers, db_session, storage_tmp):
@@ -346,10 +356,8 @@ async def test_different_users_can_run_concurrently(
 ):
     headers_a = await auth_headers("parallel_a", "parallel-a@example.com")
     headers_b = await auth_headers("parallel_b", "parallel-b@example.com")
-    id_a = (await _submit(
-        client, headers_a, params={"grid_size": 10, "mock_sleep": 0.2})).json()["id"]
-    id_b = (await _submit(
-        client, headers_b, params={"grid_size": 10, "mock_sleep": 0.2})).json()["id"]
+    id_a = (await _submit(client, headers_a)).json()["id"]
+    id_b = (await _submit(client, headers_b)).json()["id"]
 
     launched = await dispatch_once()
     assert len(launched) == 2

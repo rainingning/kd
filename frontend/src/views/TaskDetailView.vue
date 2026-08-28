@@ -13,7 +13,7 @@
             >
               取消任务
             </el-button>
-            <el-button type="primary" plain @click="onResubmit">复制参数重新提交</el-button>
+            <el-button type="primary" plain @click="onResubmit">{{ task.program_key === 'dcr_3d' ? '载入参数到当前工作区' : '复制参数重新提交' }}</el-button>
             <el-button @click="$router.push('/tasks')">返回列表</el-button>
           </div>
         </div>
@@ -86,7 +86,8 @@
 
         <template v-if="task.program_key === 'dcr_3d'">
           <el-divider content-position="left">参数快照</el-divider>
-          <ParamForm :model-value="task.params" program-key="dcr_3d" readonly />
+          <DcrParamForm v-if="task.parameter_schema_version === 'dcr-model-v1'" :model-value="task.params" readonly />
+          <el-alert v-else type="info" :closable="false" title="这是升级前的旧占位参数格式，不能载入真实参数表单；仍可在下方下载原 model_DC.dat。" />
         </template>
 
         <el-divider content-position="left">文件下载</el-divider>
@@ -126,7 +127,7 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Download } from '@element-plus/icons-vue'
-import ParamForm from '../components/ParamForm.vue'
+import DcrParamForm from '../components/DcrParamForm.vue'
 import StatusTag from '../components/StatusTag.vue'
 import { downloadTaskFile, taskApi } from '../api/tasks'
 import {
@@ -235,6 +236,14 @@ function onDownload(kind) {
 }
 
 function onResubmit() {
+  if (task.value.program_key === 'dcr_3d') {
+    if (task.value.archive_status !== 'COMPLETED' || task.value.parameter_schema_version !== 'dcr-model-v1') {
+      ElMessage.info('该任务参数不可载入真实 DCR 表单')
+      return
+    }
+    router.push({ path: '/dcr-params', query: { task_id: task.value.id } })
+    return
+  }
   router.push({ path: '/submit', query: { from: task.value.id } })
 }
 

@@ -9,6 +9,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..config import settings
+from ..param_schema import ParamValidationError
+from .dcr_params import DcrParamsError, ensure_dcr_params_files, get_current_document
 from .program_template import (
     ProgramManifest,
     ProgramTemplateError,
@@ -17,7 +19,7 @@ from .program_template import (
     validate_all_program_templates,
     validate_program_template,
 )
-from .programs import DCR_3D, PROGRAM_DLL, get_program, list_programs
+from .programs import DCR_3D, DCR_PARAMS_FILE, PROGRAM_DLL, get_program, list_programs
 from .storage import (
     ARCHIVES_DIR,
     STAGING_DIR,
@@ -32,6 +34,7 @@ from .storage import (
     result_dir,
     staging_root,
     user_root,
+    workspace_state_root,
 )
 
 logger = logging.getLogger(__name__)
@@ -142,6 +145,7 @@ def initialize_workspace(
         programs_root(user_id).mkdir(parents=True, exist_ok=True)
         staging_root(user_id).mkdir(parents=True, exist_ok=True)
         archives_root(user_id).mkdir(parents=True, exist_ok=True)
+        workspace_state_root(user_id).mkdir(parents=True, exist_ok=True)
         manifests = ManifestBundle(validate_all_program_templates(template_dir))
         for spec in list_programs():
             mesh_dir(user_id, spec.key).mkdir(parents=True, exist_ok=True)
@@ -149,9 +153,10 @@ def initialize_workspace(
             sync_program_files(
                 user_id, program_key=spec.key, template_dir=template_dir,
                 manifest=manifests[spec.key])
+        ensure_dcr_params_files(user_id, template_dir=template_dir)
         logger.info("用户 #%s 多程序工作区初始化完成：root=%s", user_id, root)
         return manifests
-    except (OSError, ProgramTemplateError, WorkspaceError) as exc:
+    except (OSError, ProgramTemplateError, WorkspaceError, DcrParamsError, ParamValidationError) as exc:
         if created_root:
             shutil.rmtree(root, ignore_errors=True)
         if isinstance(exc, WorkspaceError):
@@ -201,6 +206,20 @@ def check_workspace(
             actual[filename] = sha256_file(path)
         else:
             errors.append(f"缺少文件：{filename}")
+    if program_key == DCR_3D:
+        try:
+            current = get_current_document(user_id)
+            runtime = params_path(user_id, program_key)
+            if not runtime.is_file():
+                errors.append(f"缺少文件：{runtime.name}")
+            else:
+                from ..param_schema import parse_params_bytes
+                parse_params_bytes(runtime.read_bytes())
+                actual[DCR_PARAMS_FILE] = sha256_file(runtime)
+                if actual[DCR_PARAMS_FILE] != current.sha256:
+                    errors.append("工作目录 model_DC.dat 与当前参数镜像不一致")
+        except (DcrParamsError, ParamValidationError, OSError) as exc:
+            errors.append(f"DCR 参数无效：{exc}")
 
     if expected_exe_sha256 and actual.get(spec.executable) != expected_exe_sha256:
         errors.append(f"{spec.executable} SHA-256 不一致")

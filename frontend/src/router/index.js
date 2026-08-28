@@ -46,6 +46,12 @@ const routes = [
         meta: { title: '提交任务', requiresAuth: true },
       },
       {
+        path: 'dcr-params',
+        name: 'dcr-params',
+        component: () => import('../views/DcrParamsView.vue'),
+        meta: { title: 'DCR 参数', requiresAuth: true },
+      },
+      {
         path: 'tasks',
         name: 'tasks',
         component: () => import('../views/TaskListView.vue'),

@@ -2,21 +2,7 @@
   <div class="page-container">
     <el-card class="page-card">
       <template #header>
-        <div class="card-header">
-          <span class="title">提交任务</span>
-          <div v-if="isDcr" class="header-actions">
-            <el-select
-              v-model="selectedTemplateId"
-              placeholder="从模板载入参数"
-              clearable
-              style="width: 220px"
-              @change="onTemplateChange"
-            >
-              <el-option v-for="t in templates" :key="t.id" :label="t.name" :value="t.id" />
-            </el-select>
-            <el-button @click="saveDialogVisible = true">另存为模板</el-button>
-          </div>
-        </div>
+        <div class="card-header"><span class="title">提交任务</span></div>
       </template>
 
       <el-alert
@@ -86,8 +72,22 @@
       </el-form>
 
       <template v-if="isDcr">
-        <el-divider content-position="left">算法参数</el-divider>
-        <ParamForm ref="paramFormRef" v-model="params" program-key="dcr_3d" />
+        <el-divider content-position="left">DCR 参数快照</el-divider>
+        <el-card shadow="never" v-loading="dcrParamsLoading">
+          <el-alert
+            type="info"
+            :closable="false"
+            title="提交时后台会把当前工作区 model_DC.dat 复制为本任务的不可变快照；以后编辑当前参数不会改变已提交任务。"
+          />
+          <el-descriptions v-if="dcrCurrent" :column="2" border class="dcr-summary">
+            <el-descriptions-item label="当前 SHA-256" :span="2"><code class="hash-text">{{ dcrCurrent.sha256 }}</code></el-descriptions-item>
+            <el-descriptions-item label="边界模式">{{ dcrCurrent.document?.boundary_mode === 1 ? 'Robin' : '零 Dirichlet' }}</el-descriptions-item>
+            <el-descriptions-item label="输出 VTK">{{ dcrCurrent.document?.write_vtk ? '是' : '否' }}</el-descriptions-item>
+            <el-descriptions-item label="材料数量">{{ dcrCurrent.document?.materials?.length || 0 }}</el-descriptions-item>
+            <el-descriptions-item label="供电源数量">{{ dcrCurrent.document?.sources?.length || 0 }}</el-descriptions-item>
+          </el-descriptions>
+          <el-button type="primary" plain class="edit-dcr" @click="$router.push('/dcr-params')">加载或编辑 model_DC.dat</el-button>
+        </el-card>
       </template>
 
       <div class="submit-row">
@@ -95,17 +95,6 @@
       </div>
     </el-card>
 
-    <el-dialog v-model="saveDialogVisible" title="另存为 DCR_3D 参数模板" width="420px">
-      <el-form label-position="top">
-        <el-form-item label="模板名称" required :error="saveNameError">
-          <el-input v-model="saveName" placeholder="请输入模板名称" maxlength="128" />
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="saveDialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="saving" @click="onSaveTemplate">保存</el-button>
-      </template>
-    </el-dialog>
   </div>
 </template>
 
@@ -114,22 +103,19 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { UploadFilled } from '@element-plus/icons-vue'
-import ParamForm from '../components/ParamForm.vue'
 import { taskApi } from '../api/tasks'
-import { templateApi } from '../api/templates'
+import { dcrParamsApi } from '../api/dcrParams'
 import { getPrograms } from '../api/params'
 
 const route = useRoute()
 const router = useRouter()
-const paramFormRef = ref()
 const uploadRef = ref()
 const parameterUploadRef = ref()
-const params = ref({})
 const programs = ref([])
 const programKey = ref('dcr_3d')
 const stdinChoice = ref(null)
-const templates = ref([])
-const selectedTemplateId = ref(null)
+const dcrCurrent = ref(null)
+const dcrParamsLoading = ref(false)
 const file = ref(null)
 const parameterFile = ref(null)
 const fileError = ref('')
@@ -137,10 +123,6 @@ const parameterFileError = ref('')
 const choiceError = ref('')
 const submitting = ref(false)
 const copiedFrom = ref(null)
-const saveDialogVisible = ref(false)
-const saveName = ref('')
-const saveNameError = ref('')
-const saving = ref(false)
 
 const selectedProgram = computed(() => programs.value.find((item) => item.key === programKey.value))
 const isDcr = computed(() => programKey.value === 'dcr_3d')
@@ -154,29 +136,28 @@ onMounted(async () => {
   try {
     const catalog = await getPrograms()
     programs.value = catalog.items || []
-    await loadTemplates()
     const from = route.query.from
     if (from) {
       const task = await taskApi.detail(from)
       programKey.value = task.program_key || 'dcr_3d'
       stdinChoice.value = task.stdin_choice
-      params.value = { ...task.params }
       copiedFrom.value = task.id
     }
+    if (programKey.value === 'dcr_3d') await loadDcrCurrent()
   } catch {
     // 全局拦截器已提示
   }
 })
 
-async function loadTemplates() {
-  templates.value = await templateApi.list('dcr_3d')
+async function loadDcrCurrent() {
+  dcrParamsLoading.value = true
+  try { dcrCurrent.value = await dcrParamsApi.current() } finally { dcrParamsLoading.value = false }
 }
 
 function onProgramChange() {
   stdinChoice.value = null
-  params.value = {}
-  selectedTemplateId.value = null
   clearParameterFile()
+  if (isDcr.value) loadDcrCurrent()
 }
 
 function onChoiceChange() {
@@ -190,15 +171,6 @@ function clearParameterFile() {
   parameterFileError.value = ''
 }
 
-function onTemplateChange(id) {
-  if (!id) return
-  const tpl = templates.value.find((t) => t.id === id)
-  if (tpl) {
-    params.value = { ...tpl.params }
-    ElMessage.success(`已载入模板「${tpl.name}」`)
-  }
-  selectedTemplateId.value = null
-}
 
 function onFileChange(uploadFile) { file.value = uploadFile.raw; fileError.value = '' }
 function onFileRemove() { file.value = null }
@@ -211,28 +183,11 @@ function onParameterFileExceed(files) {
   parameterUploadRef.value.clearFiles(); parameterUploadRef.value.handleStart(files[0]); parameterFile.value = files[0]; parameterFileError.value = ''
 }
 
-async function onSaveTemplate() {
-  saveNameError.value = ''
-  if (!saveName.value.trim()) { saveNameError.value = '请输入模板名称'; return }
-  if (!paramFormRef.value?.validate()) { ElMessage.warning('参数校验未通过'); return }
-  saving.value = true
-  try {
-    await templateApi.create(saveName.value.trim(), cleanParams(), 'dcr_3d')
-    ElMessage.success('模板已保存')
-    saveDialogVisible.value = false
-    saveName.value = ''
-    await loadTemplates()
-  } finally { saving.value = false }
-}
-
-function cleanParams() {
-  return Object.fromEntries(Object.entries(params.value).filter(([, value]) => value !== undefined && value !== null && value !== ''))
-}
 
 async function onSubmit() {
   let valid = true
   if (isDcr.value) {
-    valid = Boolean(paramFormRef.value?.validate())
+    if (!dcrCurrent.value?.sha256) { ElMessage.warning('当前 DCR 参数尚未加载，请先进入 DCR 参数页面检查并保存'); valid = false }
   } else {
     if (!stdinChoice.value) { choiceError.value = '请选择参数文件 1 或 2'; valid = false }
     if (!parameterFile.value) { parameterFileError.value = '请上传所选 .dat 参数文件'; valid = false }
@@ -247,8 +202,9 @@ async function onSubmit() {
   try {
     const task = await taskApi.submit({
       programKey: programKey.value,
-      params: isDcr.value ? cleanParams() : {},
+      params: {},
       stdinChoice: isDcr.value ? null : stdinChoice.value,
+      dcrParameterSha256: isDcr.value ? dcrCurrent.value.sha256 : null,
       meshFile: file.value,
       parameterFile: isDcr.value ? null : parameterFile.value,
     })
@@ -264,5 +220,8 @@ async function onSubmit() {
 .program-select { width: 360px; }
 .upload-icon { color: #909399; margin-top: 8px; }
 .field-hint { width: 100%; margin-top: 8px; color: #909399; font-size: 12px; }
+.dcr-summary { margin-top: 16px; }
+.edit-dcr { margin-top: 16px; }
+.hash-text { word-break: break-all; }
 .submit-row { margin-top: 24px; text-align: center; }
 </style>

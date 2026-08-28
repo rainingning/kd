@@ -15,6 +15,10 @@ from app.services.archive import (
     archive_task_files, archive_version, remove_temporary_archives,
 )
 from app.services.dcr_params import get_current_document, save_current_document
+from app.services.program_params import (
+    get_current_document as get_source_current_document,
+    save_current_document as save_source_current_document,
+)
 from app.services.program_template import ProgramTemplateError, sha256_file, validate_program_template
 from app.services.result_zip import ensure_result_zip
 from app.services.staging import (
@@ -66,7 +70,7 @@ def _make_template(root: Path, *, version: str = "1.2.3") -> Path:
         else:
             for filename in ("GroundedWireSource.dat", "LoopSource.dat"):
                 path = directory / filename
-                path.write_text(f"{program_key}-{filename}\n", encoding="utf-8")
+                shutil.copy2(REPO_ROOT / "docs" / program_key / filename, path)
                 parameter_sha256[filename] = sha256_file(path)
         (directory / "program-manifest.json").write_text(json.dumps({
             "program_key": program_key,
@@ -133,6 +137,26 @@ def test_program_sync_preserves_user_saved_dcr_params(tmp_path, monkeypatch):
     assert after.sha256 == saved.sha256
     assert after.document["materials"][0]["rho_x"] == 777.0
     assert params_path(43).read_bytes() == canonical_params_path(43).read_bytes()
+
+
+def test_program_sync_preserves_source_params(tmp_path, monkeypatch):
+    storage = tmp_path / "storage"
+    template = _make_template(tmp_path / "template")
+    monkeypatch.setattr(settings, "storage_root", storage)
+    initialize_workspace(44, template_dir=template)
+    current = get_source_current_document(44, "be_fetd", "loop")
+    changed = json.loads(json.dumps(current.document))
+    changed["source"]["current"] = 9.5
+    saved = save_source_current_document(
+        44, "be_fetd", "loop", changed, expected_sha256=current.sha256)
+
+    initialize_workspace(44, template_dir=template)
+    after = get_source_current_document(44, "be_fetd", "loop")
+    assert after.sha256 == saved.sha256
+    assert after.document["source"]["current"] == 9.5
+    assert params_path(44, "be_fetd", "LoopSource.dat").read_bytes() == (
+        storage / "44" / ".workspace-state" / "be_fetd" / "LoopSource.dat"
+    ).read_bytes()
 
 
 def test_program_pair_sync_rolls_back_on_second_replace_failure(tmp_path, monkeypatch):

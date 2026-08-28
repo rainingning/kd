@@ -9,8 +9,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..config import settings
+from ..em_param_schema import ParamValidationError as EmParamValidationError
 from ..param_schema import ParamValidationError
 from .dcr_params import DcrParamsError, ensure_dcr_params_files, get_current_document
+from .program_params import (
+    ProgramParamsError,
+    ensure_program_params_files,
+    get_current_document as get_source_current_document,
+)
 from .program_template import (
     ProgramManifest,
     ProgramTemplateError,
@@ -154,9 +160,15 @@ def initialize_workspace(
                 user_id, program_key=spec.key, template_dir=template_dir,
                 manifest=manifests[spec.key])
         ensure_dcr_params_files(user_id, template_dir=template_dir)
+        for spec in list_programs():
+            if spec.parameter_mode == "source-structured":
+                ensure_program_params_files(user_id, spec.key, template_dir=template_dir)
         logger.info("用户 #%s 多程序工作区初始化完成：root=%s", user_id, root)
         return manifests
-    except (OSError, ProgramTemplateError, WorkspaceError, DcrParamsError, ParamValidationError) as exc:
+    except (
+        OSError, ProgramTemplateError, WorkspaceError, DcrParamsError,
+        ProgramParamsError, ParamValidationError, EmParamValidationError,
+    ) as exc:
         if created_root:
             shutil.rmtree(root, ignore_errors=True)
         if isinstance(exc, WorkspaceError):
@@ -200,12 +212,6 @@ def check_workspace(
             actual[path.name] = sha256_file(path)
         else:
             errors.append(f"缺少文件：{path.name}")
-    for filename in spec.parameter_files if spec.parameter_mode == "upload" else ():
-        path = params_path(user_id, program_key, filename)
-        if path.is_file():
-            actual[filename] = sha256_file(path)
-        else:
-            errors.append(f"缺少文件：{filename}")
     if program_key == DCR_3D:
         try:
             current = get_current_document(user_id)
@@ -220,6 +226,21 @@ def check_workspace(
                     errors.append("工作目录 model_DC.dat 与当前参数镜像不一致")
         except (DcrParamsError, ParamValidationError, OSError) as exc:
             errors.append(f"DCR 参数无效：{exc}")
+    elif spec.parameter_mode == "source-structured":
+        for choice in spec.source_choices:
+            try:
+                current = get_source_current_document(user_id, program_key, choice.source_type)
+                runtime = params_path(user_id, program_key, choice.filename)
+                if not runtime.is_file():
+                    errors.append(f"缺少文件：{choice.filename}")
+                    continue
+                from ..em_param_schema import parse_parameter_bytes
+                parse_parameter_bytes(program_key, choice.source_type, runtime.read_bytes())
+                actual[choice.filename] = sha256_file(runtime)
+                if actual[choice.filename] != current.sha256:
+                    errors.append(f"工作目录 {choice.filename} 与当前参数镜像不一致")
+            except (ProgramParamsError, EmParamValidationError, OSError) as exc:
+                errors.append(f"{choice.filename} 参数无效：{exc}")
 
     if expected_exe_sha256 and actual.get(spec.executable) != expected_exe_sha256:
         errors.append(f"{spec.executable} SHA-256 不一致")

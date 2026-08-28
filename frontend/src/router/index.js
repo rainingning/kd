@@ -52,6 +52,16 @@ const routes = [
         meta: { title: 'DCR 参数', requiresAuth: true },
       },
       {
+        path: 'program-params',
+        redirect: '/program-params/be_fetd/grounded_wire',
+      },
+      {
+        path: 'program-params/:programKey/:sourceType',
+        name: 'source-params',
+        component: () => import('../views/SourceParamsView.vue'),
+        meta: { title: 'BE/FDEM 参数', requiresAuth: true },
+      },
+      {
         path: 'tasks',
         name: 'tasks',
         component: () => import('../views/TaskListView.vue'),

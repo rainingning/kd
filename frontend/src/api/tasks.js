@@ -2,12 +2,13 @@ import http, { extractErrorMessage } from './http'
 import { ElMessage } from 'element-plus'
 
 export const taskApi = {
-  submit: ({ programKey, params = {}, stdinChoice = null, dcrParameterSha256 = null, meshFile, parameterFile = null }) => {
+  submit: ({ programKey, params = {}, stdinChoice = null, dcrParameterSha256 = null, parameterSha256 = null, meshFile, parameterFile = null }) => {
     const form = new FormData()
     form.append('program_key', programKey)
     form.append('params', JSON.stringify(params))
     if (stdinChoice !== null) form.append('stdin_choice', String(stdinChoice))
     if (dcrParameterSha256) form.append('dcr_parameter_sha256', dcrParameterSha256)
+    if (parameterSha256) form.append('parameter_sha256', parameterSha256)
     form.append('file', meshFile)
     if (parameterFile) form.append('parameter_file', parameterFile)
     return http.post('/tasks', form)

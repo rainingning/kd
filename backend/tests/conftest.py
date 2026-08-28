@@ -79,9 +79,10 @@ def workspace_env(tmp_path, monkeypatch):
             shutil.copy2(Path(__file__).resolve().parents[2] / "docs" / "model_DC.dat", path)
             parameter_sha256[path.name] = sha256_file(path)
         else:
+            docs_dir = Path(__file__).resolve().parents[2] / "docs" / program_key
             for filename in ("GroundedWireSource.dat", "LoopSource.dat"):
                 path = root / filename
-                path.write_text(f"default {program_key} {filename}\n", encoding="utf-8")
+                shutil.copy2(docs_dir / filename, path)
                 parameter_sha256[filename] = sha256_file(path)
         (root / "program-manifest.json").write_text(json.dumps({
             "program_key": program_key,

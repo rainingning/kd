@@ -86,9 +86,17 @@ def workspace_state_root(user_id: int) -> Path:
     return user_root(user_id) / WORKSPACE_STATE_DIR
 
 
+def canonical_program_param_path(user_id: int, program_key: str, filename: str) -> Path:
+    """一个受控程序参数文件的内部权威镜像。"""
+    spec = get_program(program_key)
+    if filename not in spec.parameter_files:
+        raise ValueError(f"程序 {program_key} 不允许参数文件 {filename}")
+    return workspace_state_root(user_id) / program_key / filename
+
+
 def canonical_params_path(user_id: int) -> Path:
-    """DCR 当前参数的内部权威镜像；运行时工作目录可临时被任务快照覆盖。"""
-    return workspace_state_root(user_id) / DCR_3D / DCR_PARAMS_FILE
+    """DCR 当前参数镜像兼容入口。"""
+    return canonical_program_param_path(user_id, DCR_3D, DCR_PARAMS_FILE)
 
 
 def archive_dir(user_id: int, version: str) -> Path:

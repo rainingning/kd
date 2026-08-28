@@ -87,10 +87,14 @@ class TemplateResponse(BaseModel):
 
 # ---- DCR 当前参数 ----
 
-class DcrParamsSaveRequest(BaseModel):
+class ProgramParamsSaveRequest(BaseModel):
     document: dict
     expected_sha256: str = Field(pattern=r"^[0-9a-fA-F]{64}$")
     source_task_id: int | None = Field(default=None, gt=0)
+
+
+class DcrParamsSaveRequest(ProgramParamsSaveRequest):
+    """DCR 路由兼容名称。"""
 
 
 # ---- 任务 ----

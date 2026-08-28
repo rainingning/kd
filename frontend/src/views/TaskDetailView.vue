@@ -13,7 +13,7 @@
             >
               取消任务
             </el-button>
-            <el-button type="primary" plain @click="onResubmit">{{ task.program_key === 'dcr_3d' ? '载入参数到当前工作区' : '复制参数重新提交' }}</el-button>
+            <el-button type="primary" plain @click="onResubmit">载入参数到当前工作区</el-button>
             <el-button @click="$router.push('/tasks')">返回列表</el-button>
           </div>
         </div>
@@ -89,6 +89,17 @@
           <DcrParamForm v-if="task.parameter_schema_version === 'dcr-model-v1'" :model-value="task.params" readonly />
           <el-alert v-else type="info" :closable="false" title="这是升级前的旧占位参数格式，不能载入真实参数表单；仍可在下方下载原 model_DC.dat。" />
         </template>
+        <template v-else>
+          <el-divider content-position="left">参数快照</el-divider>
+          <SourceParamForm
+            v-if="['be-fetd-params-v1', 'fdem3d-frequency-source-v1'].includes(task.parameter_schema_version)"
+            :model-value="task.params"
+            :program-key="task.program_key"
+            :source-type="task.source_type"
+            readonly
+          />
+          <el-alert v-else type="info" :closable="false" title="这是升级前的参数格式；仍可在下方下载归档原文件，若文件符合真实格式也可尝试载入当前工作区。" />
+        </template>
 
         <el-divider content-position="left">文件下载</el-divider>
         <div class="download-row">
@@ -128,6 +139,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Download } from '@element-plus/icons-vue'
 import DcrParamForm from '../components/DcrParamForm.vue'
+import SourceParamForm from '../components/SourceParamForm.vue'
 import StatusTag from '../components/StatusTag.vue'
 import { downloadTaskFile, taskApi } from '../api/tasks'
 import {
@@ -244,7 +256,15 @@ function onResubmit() {
     router.push({ path: '/dcr-params', query: { task_id: task.value.id } })
     return
   }
-  router.push({ path: '/submit', query: { from: task.value.id } })
+  if (task.value.archive_status !== 'COMPLETED' || !task.value.source_type) {
+    ElMessage.info('任务归档完成后才能载入参数')
+    return
+  }
+  router.push({
+    name: 'source-params',
+    params: { programKey: task.value.program_key, sourceType: task.value.source_type },
+    query: { task_id: task.value.id },
+  })
 }
 
 async function onCancel() {

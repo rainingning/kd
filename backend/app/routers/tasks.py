@@ -12,13 +12,14 @@ from ..db import get_session
 from ..deps import get_current_user
 from ..models import ArchiveStatus, Task, TaskStatus, User, UserProgram, WorkspaceStatus, utcnow
 from ..param_schema import SCHEMA_VERSION
+from ..em_param_schema import schema_version_for
 from ..scheduler.runner import request_cancel
-from ..scheduler.user_lock import lock_task_submission
+from ..scheduler.user_lock import lock_task_submission, try_user_workspace_lock
 from ..schemas import TaskDetailResponse, TaskListResponse, TaskResponse
 from ..services.archive import ArchiveError, archive_task_files, archive_version
 from ..services.config import get_int
 from ..services.dcr_params import DcrParamsError, snapshot_current_to
-from ..services.program_template import sha256_file
+from ..services.program_params import ProgramParamsError, snapshot_current_files
 from ..services.programs import DCR_3D, DCR_PARAMS_FILE, get_program
 from ..services.storage import path_from_relative
 from ..services.staging import (
@@ -39,6 +40,7 @@ async def submit_task(
     program_key: str = Form(DCR_3D),
     stdin_choice: int | None = Form(default=None),
     dcr_parameter_sha256: str | None = Form(default=None),
+    parameter_sha256: str | None = Form(default=None),
     file: UploadFile = File(..., description="mesh 输入数据文件"),
     parameter_file: UploadFile | None = File(default=None, description="新程序所选 .dat 参数文件"),
     user: User = Depends(get_current_user),
@@ -49,7 +51,13 @@ async def submit_task(
     except ValueError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
 
+    def valid_sha(value: str | None) -> bool:
+        return value is not None and len(value) == 64 and all(
+            char in "0123456789abcdefABCDEF" for char in value)
+
     choice = None
+    original_parameter = None
+    selected_expected_sha = parameter_sha256
     if spec.parameter_mode == "structured":
         if stdin_choice is not None or parameter_file is not None:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "DCR_3D 不接受 stdin 选择或任务内 .dat 上传")
@@ -62,27 +70,37 @@ async def submit_task(
                 status.HTTP_422_UNPROCESSABLE_CONTENT,
                 "DCR_3D 请先在“DCR 参数”页面保存当前 model_DC.dat，任务提交只建立当前参数快照",
             )
-        if dcr_parameter_sha256 is not None and (
-            len(dcr_parameter_sha256) != 64
-            or any(char not in "0123456789abcdefABCDEF" for char in dcr_parameter_sha256)
-        ):
+        if parameter_sha256 and dcr_parameter_sha256 and parameter_sha256.lower() != dcr_parameter_sha256.lower():
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "两个 DCR 参数 SHA-256 不一致")
+        selected_expected_sha = parameter_sha256 or dcr_parameter_sha256
+        if selected_expected_sha is not None and not valid_sha(selected_expected_sha):
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "DCR 参数 SHA-256 格式无效")
         normalized = {}
-    else:
+    elif spec.parameter_mode == "source-structured":
+        try:
+            legacy_params = json.loads(params)
+        except json.JSONDecodeError:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "params 不是合法的 JSON")
+        if legacy_params:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                "请先在参数页面保存当前文件，任务提交只建立当前参数快照",
+            )
         if dcr_parameter_sha256 is not None:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "该程序不接受 DCR 参数 SHA-256")
+        if parameter_file is not None:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "请先在参数页面保存当前文件，任务提交不再接收 .dat 上传")
         if stdin_choice is None:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "请选择参数文件 1 或 2")
         try:
             choice = spec.choice_by_value(stdin_choice)
         except ValueError as exc:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
-        if parameter_file is None:
-            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, f"请上传 {choice.filename}")
-        original_parameter = (parameter_file.filename or "").replace("\\", "/").split("/")[-1]
-        if not original_parameter.lower().endswith(".dat"):
-            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "参数文件必须是 .dat 文件")
+        if not valid_sha(parameter_sha256):
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "请刷新并提交当前参数 SHA-256")
         normalized = {}
+    else:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, f"程序 {program_key} 的参数模式不受支持")
 
     if user.workspace_status != WorkspaceStatus.READY:
         raise HTTPException(
@@ -112,7 +130,10 @@ async def submit_task(
         source_type=choice.source_type if choice else None,
         stdin_choice=choice.stdin_choice if choice else None,
         params=normalized,
-        parameter_schema_version=SCHEMA_VERSION if spec.parameter_mode == "structured" else None,
+        parameter_schema_version=(
+            SCHEMA_VERSION if spec.parameter_mode == "structured"
+            else schema_version_for(program_key)
+        ),
         input_filename=original_filename,
         parameter_filename=choice.filename if choice else DCR_PARAMS_FILE,
         parameter_original_filename=original_parameter if choice else None,
@@ -130,23 +151,23 @@ async def submit_task(
             create_staging, user.id, task.id, None,
             program_key=program_key,
         )
-        if spec.parameter_mode == "structured":
-            current = await asyncio.to_thread(
-                snapshot_current_to, user.id, stage / DCR_PARAMS_FILE)
-            if dcr_parameter_sha256 and current.sha256 != dcr_parameter_sha256.lower():
-                raise DcrParamsError("当前 DCR 参数已更新，请刷新参数摘要后重新提交")
+        async with try_user_workspace_lock(user.id) as acquired:
+            if not acquired:
+                raise DcrParamsError("用户工作区锁忙，请稍后重新提交")
+            if spec.parameter_mode == "structured":
+                current = await asyncio.to_thread(
+                    snapshot_current_to, user.id, stage / DCR_PARAMS_FILE)
+            else:
+                snapshots = await asyncio.to_thread(
+                    snapshot_current_files, user.id, program_key, stage)
+                current = snapshots[choice.source_type]
+            if selected_expected_sha and current.sha256 != selected_expected_sha.lower():
+                raise DcrParamsError("当前参数已更新，请刷新参数摘要后重新提交")
             normalized = current.document
             task.params = normalized
             task.parameter_sha256 = current.sha256
         size = await write_staged_upload(stage, file, max_bytes=max_bytes)
-        parameter_size = None
-        if choice and parameter_file is not None:
-            parameter_size = await write_staged_upload(
-                stage, parameter_file, max_bytes=max_bytes,
-                destination_name=choice.filename,
-            )
-            task.parameter_sha256 = await asyncio.to_thread(
-                sha256_file, stage / choice.filename)
+        parameter_size = (stage / task.parameter_filename).stat().st_size
         await asyncio.to_thread(write_staging_metadata, stage, {
             "task_id": task.id,
             "user_id": user.id,
@@ -156,6 +177,7 @@ async def submit_task(
             "parameter_filename": task.parameter_filename,
             "parameter_original_filename": task.parameter_original_filename,
             "parameter_sha256": task.parameter_sha256,
+            "parameter_schema_version": task.parameter_schema_version,
             "original_input_filename": original_filename,
             "params": normalized,
             "queued_at": task.queued_at.isoformat() if task.queued_at else utcnow().isoformat(),
@@ -168,7 +190,7 @@ async def submit_task(
             await asyncio.to_thread(remove_staging, stage)
         await session.rollback()
         raise HTTPException(status.HTTP_413_CONTENT_TOO_LARGE, str(exc)) from exc
-    except DcrParamsError as exc:
+    except (DcrParamsError, ProgramParamsError) as exc:
         if stage is not None:
             await asyncio.to_thread(remove_staging, stage)
         await session.rollback()

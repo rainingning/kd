@@ -9,6 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 from app.param_schema import parse_params  # noqa: E402
+from app.em_param_schema import parse_parameter_bytes  # noqa: E402
 
 MESH = Path("mesh") / "mesh.mphtxt"
 RESULT = Path("Forward_data")
@@ -86,12 +87,22 @@ def main() -> int:
         print(f"invalid stdin choice: {choice!r}", file=sys.stderr)
         return 8
     payload = (root / selected).read_bytes()
+    source_type = "grounded_wire" if choice == "1" else "loop"
+    try:
+        params = parse_parameter_bytes(program, source_type, payload)
+    except Exception as exc:
+        print(f"input read failed: {exc}", file=sys.stderr)
+        return 9
     time.sleep(0.1)
     _write_result(program, mesh, {
         "stdin_choice": int(choice),
+        "source_type": source_type,
         "parameter_file": selected,
         "parameter_bytes": len(payload),
         "parameter_sha256": hashlib.sha256(payload).hexdigest(),
+        "material_count": len(params["materials"]),
+        "receiver_count": len(params["receivers"]),
+        "geometry_count": len(params["source"].get("segments", params["source"].get("vertices", []))),
     })
     print(f"mock {program} completed with choice {choice}")
     return 0

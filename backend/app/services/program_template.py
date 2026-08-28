@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..config import settings
+from ..em_param_schema import ParamValidationError as EmParamValidationError, parse_parameter_bytes
 from .programs import DCR_3D, PROGRAM_DLL, ProgramSpec, get_program, list_programs
 
 MANIFEST_FILE = "program-manifest.json"
@@ -130,6 +131,17 @@ def _validate_files(root: Path, spec: ProgramSpec, manifest: ProgramManifest) ->
             raise ProgramTemplateError(f"{spec.key} 程序模板缺少 {filename}")
         if sha256_file(path) != expected:
             raise ProgramTemplateError(f"{spec.key}/{filename} SHA-256 与清单不一致")
+    if spec.parameter_mode == "source-structured":
+        for choice in spec.source_choices:
+            try:
+                parse_parameter_bytes(
+                    spec.key,
+                    choice.source_type,
+                    (root / choice.filename).read_bytes(),
+                )
+            except (OSError, EmParamValidationError) as exc:
+                raise ProgramTemplateError(
+                    f"{spec.key}/{choice.filename} 真实参数无效：{exc}") from exc
 
 
 def validate_program_template(

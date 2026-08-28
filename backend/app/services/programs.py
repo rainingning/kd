@@ -43,6 +43,10 @@ class ProgramSpec:
         return bool(self.source_choices)
 
     @property
+    def uses_current_params(self) -> bool:
+        return self.parameter_mode in {"structured", "source-structured"}
+
+    @property
     def parameter_files(self) -> tuple[str, ...]:
         if self.parameter_mode == "structured":
             return (DCR_PARAMS_FILE,)
@@ -79,7 +83,7 @@ PROGRAMS: dict[str, ProgramSpec] = {
         display_name="BE_FETD",
         directory_name=BE_FETD,
         executable="BE_FETD.exe",
-        parameter_mode="upload",
+        parameter_mode="source-structured",
         source_choices=_SOURCE_CHOICES,
     ),
     FDEM3D_FREQUENCY_DOMAIN: ProgramSpec(
@@ -87,7 +91,7 @@ PROGRAMS: dict[str, ProgramSpec] = {
         display_name="FDEM3D_Frequency_Domain",
         directory_name=FDEM3D_FREQUENCY_DOMAIN,
         executable="FDEM3D_Frequency_Domain.exe",
-        parameter_mode="upload",
+        parameter_mode="source-structured",
         source_choices=_SOURCE_CHOICES,
     ),
 }

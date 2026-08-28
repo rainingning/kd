@@ -61,9 +61,8 @@ def create_staging(
     directory.mkdir(parents=True, exist_ok=False)
     try:
         if spec.parameter_mode == "structured":
-            if params_content is None:
-                raise ValueError("DCR_3D 暂存区缺少参数内容")
-            atomic_write_text(directory / PARAMS_FILE, params_content)
+            if params_content is not None:
+                atomic_write_text(directory / PARAMS_FILE, params_content)
         else:
             manifest = validate_program_template(program_key=program_key)
             source_root = program_template_dir(program_key)

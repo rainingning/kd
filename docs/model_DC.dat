@@ -1,0 +1,44 @@
+# DCR3D parameter file. Blank lines and text after # are ignored.
+
+1                                  # artificial boundary: 1=Robin, 2=zero Dirichlet
+1                                  # write nodal-potential VTK: 1=yes, 0=no
+
+2 2 4                              # number of air domain IDs, followed by the IDs
+4                                  # number of material parameter rows below
+# ID   rho_x       rho_y       rho_z       alpha  beta  gamma (ohm*m, degrees)
+1      100.0       100.0       100.0       0.0    0.0   0.0
+2      1.0e8       1.0e8       1.0e8       0.0    0.0   0.0  # air; listed for readability, not solved
+3      100.0       100.0       100.0       0.0    0.0   0.0
+4      1.0e8       1.0e8       1.0e8       0.0    0.0   0.0  # air; listed for readability, not solved
+
+3                                  # number of AB current-electrode pairs
+
+# Source 1
+1.0                                # current I (A)
+-100.0   0.0   0.0                # A electrode x y z (m)
+ 100.0   0.0   0.0                # B electrode x y z (m)
+4                                  # number of MN pairs for Source 1
+# Mx My Mz   Nx Ny Nz   geometry_mode custom_K
+-20.0    0.0  0.0    20.0    0.0  0.0    1  0.0
+-30.0    0.0  0.0    30.0    0.0  0.0    1  0.0
+-50.0    0.0  0.0    50.0    0.0  0.0    1  0.0
+-30.0   30.0  0.0    30.0   30.0  0.0    1  0.0
+
+# Source 2
+1.0                                # current I (A)
+-100.0  100.0  0.0                # A electrode x y z (m)
+ 100.0  100.0  0.0                # B electrode x y z (m)
+3                                  # number of MN pairs for Source 2
+# Mx My Mz   Nx Ny Nz   geometry_mode custom_K
+-20.0  100.0  0.0    20.0  100.0  0.0    1  0.0
+-30.0  100.0  0.0    30.0  100.0  0.0    1  0.0
+-50.0  100.0  0.0    50.0  100.0  0.0    1  0.0
+
+# Source 3
+2.0                                # current I (A)
+0.0  -100.0  0.0                  # A electrode x y z (m)
+0.0   100.0  0.0                  # B electrode x y z (m)
+2                                  # number of MN pairs for Source 3
+# Mx My Mz   Nx Ny Nz   geometry_mode custom_K
+0.0  -30.0  0.0    0.0   30.0  0.0    1  0.0
+30.0 -30.0  0.0    30.0  30.0  0.0    1  0.0

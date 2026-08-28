@@ -30,6 +30,7 @@ from ..models import (
     utcnow,
 )
 from ..scheduler.runner import finalize_task, recover_task, request_cancel
+from ..scheduler.user_lock import try_user_workspace_lock
 from ..schemas import (
     AdminTaskItem,
     AdminUserCreate,
@@ -494,7 +495,16 @@ async def check_one_user_workspace(
     target = await session.get(User, user_id)
     if target is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "用户不存在")
-    checks = await asyncio.to_thread(check_all_workspaces, user_id)
+    active = await session.scalar(select(func.count(Task.id)).where(
+        Task.user_id == user_id,
+        Task.status.in_(ACTIVE_WORKSPACE_STATUSES),
+    ))
+    if active:
+        raise HTTPException(status.HTTP_409_CONFLICT, "用户工作区正在运行或归档任务，请稍后检查")
+    async with try_user_workspace_lock(user_id) as acquired:
+        if not acquired:
+            raise HTTPException(status.HTTP_409_CONFLICT, "用户工作区锁忙，请稍后检查")
+        checks = await asyncio.to_thread(check_all_workspaces, user_id)
     rows = {
         row.program_key: row
         for row in (await session.scalars(

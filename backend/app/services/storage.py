@@ -18,6 +18,7 @@ PARAMS_FILE = DCR_PARAMS_FILE
 PROGRAMS_DIR = "programs"
 STAGING_DIR = "staging"
 ARCHIVES_DIR = "archives"
+WORKSPACE_STATE_DIR = ".workspace-state"
 STDOUT_FILE = "stdout.txt"
 STDERR_FILE = "stderr.txt"
 TASK_META_FILE = "task.json"
@@ -79,6 +80,15 @@ def staging_dir(user_id: int, task_id: int) -> Path:
 
 def archives_root(user_id: int) -> Path:
     return user_root(user_id) / ARCHIVES_DIR
+
+
+def workspace_state_root(user_id: int) -> Path:
+    return user_root(user_id) / WORKSPACE_STATE_DIR
+
+
+def canonical_params_path(user_id: int) -> Path:
+    """DCR 当前参数的内部权威镜像；运行时工作目录可临时被任务快照覆盖。"""
+    return workspace_state_root(user_id) / DCR_3D / DCR_PARAMS_FILE
 
 
 def archive_dir(user_id: int, version: str) -> Path:

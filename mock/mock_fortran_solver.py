@@ -7,6 +7,9 @@ import sys
 import time
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
+from app.param_schema import parse_params  # noqa: E402
+
 MESH = Path("mesh") / "mesh.mphtxt"
 RESULT = Path("Forward_data")
 SOURCE_FILES = {
@@ -54,16 +57,19 @@ def main() -> int:
             print("missing parameter file: model_DC.dat", file=sys.stderr)
             return 4
         try:
-            params = json.loads(params_path.read_text(encoding="utf-8"))
+            params = parse_params(params_path.read_text(encoding="utf-8-sig"))
         except Exception as exc:
             print(f"input read failed: {exc}", file=sys.stderr)
             return 5
-        time.sleep(float(params.get("mock_sleep", 0.1)))
-        _write_result("DCR_3D", mesh, params)
-        exit_code = int(params.get("mock_exit_code", 0))
-        if exit_code:
-            print(f"mock {program} failed (exit_code={exit_code})", file=sys.stderr)
-            return exit_code
+        time.sleep(0.1)
+        _write_result("DCR_3D", mesh, {
+            "boundary_mode": params["boundary_mode"],
+            "write_vtk": params["write_vtk"],
+            "air_domain_count": len(params["air_domain_ids"]),
+            "material_count": len(params["materials"]),
+            "source_count": len(params["sources"]),
+            "observation_count": sum(len(source["observations"]) for source in params["sources"]),
+        })
         print("mock DCR_3D completed")
         return 0
 

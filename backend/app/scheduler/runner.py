@@ -23,12 +23,14 @@ from ..models import (
     TaskStatus,
     User,
     UserProgram,
+    WorkspaceStatus,
     utcnow,
 )
 from ..services.archive import (
     ArchiveError, archive_task_files, archive_version, remove_temporary_archives,
 )
 from ..services.config import get_float, get_int
+from ..services.dcr_params import DcrParamsError, restore_runtime_from_canonical
 from ..services.notifications import notify
 from ..services.program_sync import sync_program_for_locked_user
 from ..services.program_template import ProgramTemplateError, validate_program_template
@@ -216,6 +218,7 @@ async def finalize_task(
             "parameter_sha256": task.parameter_sha256,
             "original_input_filename": task.input_filename,
             "params": task.params,
+            "parameter_schema_version": task.parameter_schema_version,
             "status": final_status,
             "reason": reason,
             "exit_code": exit_code,
@@ -277,6 +280,30 @@ async def finalize_task(
     return True
 
 
+async def _restore_dcr_current(user_id: int, task_id: int) -> str | None:
+    """调用方持有用户锁；失败时阻断工作区并返回可归档的错误文本。"""
+    try:
+        await asyncio.to_thread(restore_runtime_from_canonical, user_id)
+        return None
+    except (DcrParamsError, OSError, ValueError) as exc:
+        message = f"恢复当前 model_DC.dat 失败：{exc}"
+        logger.exception("任务 #%s %s", task_id, message)
+        async with db.async_session() as session:
+            user = await session.get(User, user_id)
+            installation = await session.scalar(select(UserProgram).where(
+                UserProgram.user_id == user_id,
+                UserProgram.program_key == DCR_3D,
+            ))
+            if user is not None:
+                user.workspace_status = WorkspaceStatus.ERROR
+                user.workspace_error = message
+            if installation is not None:
+                installation.workspace_status = WorkspaceStatus.ERROR
+                installation.workspace_error = message
+            await session.commit()
+        return message
+
+
 async def _prepare(task_id: int) -> tuple[int, Path, str, int | None] | None:
     """准备所选程序固定工作区并将任务推进到 RUNNING。"""
     async with db.async_session() as session:
@@ -307,6 +334,8 @@ async def _prepare(task_id: int) -> tuple[int, Path, str, int | None] | None:
             )
         except (OSError, ValueError, WorkspaceError) as exc:
             await session.rollback()
+            if task.program_key == DCR_3D:
+                await _restore_dcr_current(task.user_id, task.id)
             await finalize_task(
                 task_id, final_status=TaskStatus.FAILED,
                 reason=f"工作区准备失败：{exc}", workspace_was_used=False)
@@ -488,6 +517,11 @@ async def run_task(task_id: int) -> None:
             # 进程注册前收到取消请求，不再启动程序。
             entry = None
 
+        if program_key == DCR_3D:
+            restore_error = await _restore_dcr_current(user_id, task_id)
+            if restore_error is not None:
+                start_error = restore_error
+
         if state.shutting_down:
             return  # 保持 RUNNING，下一次启动保护并归档工作区现场。
 
@@ -554,6 +588,11 @@ async def recover_task(task_id: int) -> None:
             workspace_was_used = True
         else:
             workspace_was_used = task.workspace_was_used
+        if task.program_key == DCR_3D and workspace_was_used:
+            restore_error = await _restore_dcr_current(user_id, task_id)
+            if restore_error is not None:
+                final_status = TaskStatus.FAILED
+                reason = restore_error if not reason else f"{reason}；{restore_error}"
         await finalize_task(
             task_id,
             final_status=final_status,

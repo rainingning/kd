@@ -19,7 +19,6 @@ from .storage import (
     archive_dir,
     archives_root,
     mesh_path,
-    params_path,
     relative_to_storage,
     result_dir,
 )
@@ -117,10 +116,8 @@ def archive_task_files(
         temporary.mkdir(parents=False, exist_ok=False)
         runtime_hashes: dict[str, str] = {}
         for filename in spec.parameter_files:
-            source = (
-                params_path(user_id, program_key, filename)
-                if workspace_was_used else staging / filename
-            )
+            # staging 是提交时的不可变输入快照；工作目录参数会在进程退出后恢复为最新当前值。
+            source = staging / filename
             _copy_required(source, temporary / filename)
             runtime_hashes[filename] = sha256_file(temporary / filename)
         mesh_source = mesh_path(user_id, program_key) if workspace_was_used else staging / MESH_FILE

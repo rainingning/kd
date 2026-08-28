@@ -11,6 +11,7 @@
           class="nav-menu"
         >
           <el-menu-item index="/submit">提交任务</el-menu-item>
+          <el-menu-item index="/dcr-params">DCR 参数</el-menu-item>
           <el-menu-item index="/tasks">任务列表</el-menu-item>
           <el-menu-item index="/templates">参数模板</el-menu-item>
           <el-menu-item index="/profile">用户中心</el-menu-item>

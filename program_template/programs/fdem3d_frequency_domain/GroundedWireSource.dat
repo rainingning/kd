@@ -1,0 +1,2 @@
+# FDEM3D default GroundedWireSource template
+source_type = grounded_wire

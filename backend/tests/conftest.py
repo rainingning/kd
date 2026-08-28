@@ -59,17 +59,33 @@ def workspace_env(tmp_path, monkeypatch):
     storage = tmp_path / "storage"
     template = tmp_path / "program-template"
     template.mkdir()
-    exe = template / "DCR_3D.exe"
-    dll = template / "libiomp5md.dll"
-    exe.write_bytes(b"test-dcr3d-exe")
-    dll.write_bytes(b"test-openmp-dll")
-    (template / "program-manifest.json").write_text(json.dumps({
-        "version": "test-1.0.0",
-        "exe": exe.name,
-        "dll": dll.name,
-        "exe_sha256": sha256_file(exe),
-        "dll_sha256": sha256_file(dll),
-    }), encoding="utf-8")
+    definitions = {
+        "dcr_3d": "DCR_3D.exe",
+        "be_fetd": "BE_FETD.exe",
+        "fdem3d_frequency_domain": "FDEM3D_Frequency_Domain.exe",
+    }
+    for program_key, executable in definitions.items():
+        root = template / "programs" / program_key
+        root.mkdir(parents=True)
+        exe = root / executable
+        dll = root / "libiomp5md.dll"
+        exe.write_bytes(f"test-{program_key}-exe".encode())
+        dll.write_bytes(b"test-openmp-dll")
+        parameter_sha256 = {}
+        if program_key != "dcr_3d":
+            for filename in ("GroundedWireSource.dat", "LoopSource.dat"):
+                path = root / filename
+                path.write_text(f"default {program_key} {filename}\n", encoding="utf-8")
+                parameter_sha256[filename] = sha256_file(path)
+        (root / "program-manifest.json").write_text(json.dumps({
+            "program_key": program_key,
+            "version": "test-1.0.0",
+            "exe": executable,
+            "dll": dll.name,
+            "exe_sha256": sha256_file(exe),
+            "dll_sha256": sha256_file(dll),
+            "parameter_sha256": parameter_sha256,
+        }), encoding="utf-8")
     monkeypatch.setattr(settings, "storage_root", storage)
     monkeypatch.setattr(settings, "result_zip_cache_root", storage / ".zip-cache")
     monkeypatch.setattr(settings, "fortran_program_template_dir", template)

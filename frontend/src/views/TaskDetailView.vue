@@ -27,8 +27,13 @@
               前面还有 {{ task.queue_position }} 个任务
             </span>
           </el-descriptions-item>
-          <el-descriptions-item label="输入文件">
-            {{ task.input_filename || '—' }}
+          <el-descriptions-item label="科学计算程序">{{ programLabel(task.program_key) }}</el-descriptions-item>
+          <el-descriptions-item label="输入文件">{{ task.input_filename || '—' }}</el-descriptions-item>
+          <el-descriptions-item v-if="task.program_key !== 'dcr_3d'" label="参数选择">
+            {{ task.stdin_choice }} — {{ task.parameter_filename || '—' }}
+          </el-descriptions-item>
+          <el-descriptions-item v-if="task.program_key !== 'dcr_3d'" label="上传参数文件">
+            {{ task.parameter_original_filename || '—' }}
           </el-descriptions-item>
           <el-descriptions-item label="提交时间">{{ formatTime(task.queued_at) }}</el-descriptions-item>
           <el-descriptions-item label="开始时间">{{ formatTime(task.started_at) }}</el-descriptions-item>
@@ -63,7 +68,7 @@
               （已重试 {{ task.archive_retry_count }} 次，下次：{{ formatTime(task.archive_retry_at) }}）
             </span>
           </el-descriptions-item>
-          <el-descriptions-item v-if="task.exe_sha256" label="DCR_3D.exe SHA-256" :span="2">
+          <el-descriptions-item v-if="task.exe_sha256" :label="`${executableName(task.program_key)} SHA-256`" :span="2">
             <code class="hash-text">{{ task.exe_sha256 }}</code>
           </el-descriptions-item>
           <el-descriptions-item v-if="task.dll_sha256" label="libiomp5md.dll SHA-256" :span="2">
@@ -79,8 +84,10 @@
           class="archive-alert"
         />
 
-        <el-divider content-position="left">参数快照</el-divider>
-        <ParamForm :model-value="task.params" readonly />
+        <template v-if="task.program_key === 'dcr_3d'">
+          <el-divider content-position="left">参数快照</el-divider>
+          <ParamForm :model-value="task.params" program-key="dcr_3d" readonly />
+        </template>
 
         <el-divider content-position="left">文件下载</el-divider>
         <div class="download-row">
@@ -97,8 +104,16 @@
             输入文件
           </el-button>
           <el-button :icon="Download" :disabled="!archiveReady" @click="onDownload('params')">
-            参数文件
+            {{ task.program_key === 'dcr_3d' ? '参数文件' : '本次所选参数文件' }}
           </el-button>
+          <template v-if="task.program_key !== 'dcr_3d'">
+            <el-button :icon="Download" :disabled="!archiveReady" @click="onDownload('grounded-params')">
+              GroundedWireSource.dat
+            </el-button>
+            <el-button :icon="Download" :disabled="!archiveReady" @click="onDownload('loop-params')">
+              LoopSource.dat
+            </el-button>
+          </template>
           <span v-if="!archiveReady" class="text-muted">归档完成后可下载</span>
         </div>
       </template>
@@ -170,6 +185,24 @@ const FALLBACK_NAMES = {
   stdout: 'stdout.txt',
   stderr: 'stderr.txt',
   params: 'model_DC.dat',
+  'grounded-params': 'GroundedWireSource.dat',
+  'loop-params': 'LoopSource.dat',
+}
+
+function programLabel(key) {
+  return {
+    dcr_3d: 'DCR_3D',
+    be_fetd: 'BE_FETD',
+    fdem3d_frequency_domain: 'FDEM3D_Frequency_Domain',
+  }[key] || key || '—'
+}
+
+function executableName(key) {
+  return {
+    dcr_3d: 'DCR_3D.exe',
+    be_fetd: 'BE_FETD.exe',
+    fdem3d_frequency_domain: 'FDEM3D_Frequency_Domain.exe',
+  }[key] || '程序文件'
 }
 
 function archiveStatusLabel(status) {
@@ -195,7 +228,9 @@ function resultSummary(value) {
 }
 
 function onDownload(kind) {
-  const fallback = kind === 'input' ? (task.value.input_filename || 'mesh.mphtxt') : FALLBACK_NAMES[kind]
+  let fallback = FALLBACK_NAMES[kind]
+  if (kind === 'input') fallback = task.value.input_filename || 'mesh.mphtxt'
+  if (kind === 'params' && task.value.parameter_filename) fallback = task.value.parameter_filename
   downloadTaskFile(task.value.id, kind, fallback)
 }
 

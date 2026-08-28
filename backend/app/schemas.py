@@ -63,11 +63,13 @@ class ChangePasswordRequest(BaseModel):
 
 class TemplateCreate(BaseModel):
     name: str = Field(min_length=1, max_length=128)
+    program_key: str = Field(default="dcr_3d", pattern=r"^dcr_3d$")
     params: dict
 
 
 class TemplateUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=128)
+    program_key: str | None = Field(default=None, pattern=r"^dcr_3d$")
     params: dict | None = None
 
 
@@ -76,6 +78,7 @@ class TemplateResponse(BaseModel):
 
     id: int
     name: str
+    program_key: str
     params: dict
     created_at: datetime
     updated_at: datetime
@@ -88,8 +91,15 @@ class TaskResponse(BaseModel):
 
     id: int
     status: str
+    program_key: str
+    source_type: str | None
+    stdin_choice: int | None
     params: dict
     input_filename: str | None
+    parameter_filename: str | None
+    parameter_original_filename: str | None
+    parameter_sha256: str | None
+    runtime_file_hashes: dict | None
     workspace_was_used: bool
     archive_status: str
     terminal_status: str | None
@@ -163,7 +173,11 @@ class AdminTaskItem(BaseModel):
     user_id: int
     username: str
     status: str
+    program_key: str
+    source_type: str | None
+    stdin_choice: int | None
     input_filename: str | None
+    parameter_filename: str | None
     queued_at: datetime
     started_at: datetime | None
 

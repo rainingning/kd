@@ -86,6 +86,7 @@ import { getParamSchema } from '../api/params'
 const props = defineProps({
   modelValue: { type: Object, default: () => ({}) },
   readonly: { type: Boolean, default: false },
+  programKey: { type: String, default: 'dcr_3d' },
 })
 const emit = defineEmits(['update:modelValue'])
 
@@ -96,7 +97,7 @@ const errors = reactive({})
 
 onMounted(async () => {
   try {
-    const schema = await getParamSchema()
+    const schema = await getParamSchema(props.programKey)
     fields.value = schema.fields || []
     if (!props.readonly) fillDefaults()
   } catch {

@@ -28,8 +28,10 @@ class Settings(BaseSettings):
     # 兼容旧部署的命令模板；仅旧版测试/迁移期间使用，新执行链路不得在 dcr3d 模式调用。
     fortran_command: str = f'"{REPO_ROOT / ".venv" / "Scripts" / "python.exe"}" "{REPO_ROOT / "mock" / "mock_program.py"}" {{params}} {{data}}'
 
-    # 固定路径版 Mock 程序；runner 在用户根目录中无参数启动。
-    mock_dcr3d_command: str = f'"{REPO_ROOT / ".venv" / "Scripts" / "python.exe"}" "{REPO_ROOT / "mock" / "mock_dcr3d.py"}"'
+    # 固定路径多程序 Mock；runner 在所选程序目录中无参数启动，Mock 通过 cwd 识别程序。
+    mock_fortran_command: str = f'"{REPO_ROOT / ".venv" / "Scripts" / "python.exe"}" "{REPO_ROOT / "mock" / "mock_fortran_solver.py"}"'
+    # 旧配置名保留一个发布周期。
+    mock_dcr3d_command: str = mock_fortran_command
 
     # Forward_data ZIP 缓存目录；历史清理时同步清理。
     result_zip_cache_root: Path = REPO_ROOT / "storage" / ".zip-cache"
@@ -53,8 +55,8 @@ class Settings(BaseSettings):
     @classmethod
     def validate_execution_mode(cls, value: str) -> str:
         normalized = value.strip().lower()
-        if normalized not in {"mock", "dcr3d"}:
-            raise ValueError("execution_mode 必须为 mock 或 dcr3d")
+        if normalized not in {"mock", "dcr3d", "formal"}:
+            raise ValueError("execution_mode 必须为 mock、formal 或兼容值 dcr3d")
         return normalized
 
 

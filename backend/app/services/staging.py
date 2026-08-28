@@ -8,8 +8,9 @@ import uuid
 from pathlib import Path
 from typing import Any, Protocol
 
+from .program_template import program_template_dir, validate_program_template
+from .programs import DCR_3D, MESH_FILE, get_program
 from .storage import (
-    MESH_FILE,
     PARAMS_FILE,
     STDERR_FILE,
     STDOUT_FILE,
@@ -47,11 +48,30 @@ def atomic_write_json(path: Path, data: dict[str, Any]) -> None:
     atomic_write_text(path, json.dumps(data, ensure_ascii=False, indent=2) + "\n")
 
 
-def create_staging(user_id: int, task_id: int, params_content: str) -> Path:
+def create_staging(
+    user_id: int,
+    task_id: int,
+    params_content: str | None = None,
+    *,
+    program_key: str = DCR_3D,
+) -> Path:
+    """创建完整输入快照；新程序先复制两个模板默认参数文件。"""
+    spec = get_program(program_key)
     directory = staging_dir(user_id, task_id)
     directory.mkdir(parents=True, exist_ok=False)
     try:
-        atomic_write_text(directory / PARAMS_FILE, params_content)
+        if spec.parameter_mode == "structured":
+            if params_content is None:
+                raise ValueError("DCR_3D 暂存区缺少参数内容")
+            atomic_write_text(directory / PARAMS_FILE, params_content)
+        else:
+            manifest = validate_program_template(program_key=program_key)
+            source_root = program_template_dir(program_key)
+            for filename in spec.parameter_files:
+                shutil.copy2(source_root / filename, directory / filename)
+                # validate_program_template 已验证源文件和摘要。
+                if not (directory / filename).is_file():
+                    raise OSError(f"暂存默认参数文件失败：{filename}")
         (directory / STDOUT_FILE).touch()
         (directory / STDERR_FILE).touch()
     except Exception:
@@ -65,8 +85,12 @@ async def write_staged_upload(
     source: AsyncReadable,
     *,
     max_bytes: int,
+    destination_name: str = MESH_FILE,
 ) -> int:
-    destination = directory / MESH_FILE
+    """流式写入受控的暂存文件名，拒绝空文件和路径片段。"""
+    if Path(destination_name).name != destination_name:
+        raise ValueError("暂存目标文件名非法")
+    destination = directory / destination_name
     temporary = _temporary_for(destination)
     size = 0
     try:
@@ -76,6 +100,8 @@ async def write_staged_upload(
                 if size > max_bytes:
                     raise UploadTooLargeError("文件超过大小上限")
                 stream.write(chunk)
+        if size == 0:
+            raise ValueError("上传文件不能为空")
         os.replace(temporary, destination)
         return size
     finally:

@@ -15,7 +15,7 @@ from .db import async_session
 from .scheduler.cleanup import cleanup_loop, stop_cleanup
 from .scheduler.dispatcher import dispatch_loop, recover_interrupted_tasks, shutdown_scheduler
 from .services.config import ensure_defaults
-from .services.program_template import ProgramTemplateError, validate_program_template
+from .services.program_template import ProgramTemplateError, validate_all_program_templates
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +25,7 @@ async def lifespan(_: FastAPI):
     settings.storage_root.mkdir(parents=True, exist_ok=True)
     settings.result_zip_cache_root.mkdir(parents=True, exist_ok=True)
     try:
-        await asyncio.to_thread(validate_program_template)
+        await asyncio.to_thread(validate_all_program_templates)
     except ProgramTemplateError:
         logger.critical("正式程序模板自检失败，服务拒绝启动", exc_info=True)
         raise

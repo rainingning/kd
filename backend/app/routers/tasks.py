@@ -10,13 +10,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import get_session
 from ..deps import get_current_user
-from ..models import ArchiveStatus, Task, TaskStatus, User, WorkspaceStatus, utcnow
+from ..models import ArchiveStatus, Task, TaskStatus, User, UserProgram, WorkspaceStatus, utcnow
 from ..param_schema import ParamValidationError, serialize_params, validate_params
 from ..scheduler.runner import request_cancel
 from ..scheduler.user_lock import lock_task_submission
 from ..schemas import TaskDetailResponse, TaskListResponse, TaskResponse
 from ..services.archive import ArchiveError, archive_task_files, archive_version
 from ..services.config import get_int
+from ..services.program_template import sha256_file
+from ..services.programs import DCR_3D, get_program
 from ..services.storage import path_from_relative
 from ..services.staging import (
     UploadTooLargeError,
@@ -32,25 +34,56 @@ router = APIRouter(prefix="/api/tasks", tags=["tasks"])
 
 @router.post("", response_model=TaskResponse, status_code=status.HTTP_201_CREATED)
 async def submit_task(
-    params: str = Form(..., description="参数 JSON 字符串"),
-    file: UploadFile = File(..., description="输入数据文件"),
+    params: str = Form("{}", description="DCR_3D 参数 JSON 字符串"),
+    program_key: str = Form(DCR_3D),
+    stdin_choice: int | None = Form(default=None),
+    file: UploadFile = File(..., description="mesh 输入数据文件"),
+    parameter_file: UploadFile | None = File(default=None, description="新程序所选 .dat 参数文件"),
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
     try:
-        raw_params = json.loads(params)
-    except json.JSONDecodeError:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "params 不是合法的 JSON")
-    try:
-        normalized = validate_params(raw_params)
-    except ParamValidationError as e:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=e.errors)
+        spec = get_program(program_key)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
+
+    choice = None
+    if spec.parameter_mode == "structured":
+        if stdin_choice is not None or parameter_file is not None:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "DCR_3D 不接受 stdin 选择或 .dat 上传")
+        try:
+            raw_params = json.loads(params)
+        except json.JSONDecodeError:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "params 不是合法的 JSON")
+        try:
+            normalized = validate_params(raw_params)
+        except ParamValidationError as e:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=e.errors)
+    else:
+        if stdin_choice is None:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "请选择参数文件 1 或 2")
+        try:
+            choice = spec.choice_by_value(stdin_choice)
+        except ValueError as exc:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
+        if parameter_file is None:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, f"请上传 {choice.filename}")
+        original_parameter = (parameter_file.filename or "").replace("\\", "/").split("/")[-1]
+        if not original_parameter.lower().endswith(".dat"):
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "参数文件必须是 .dat 文件")
+        normalized = {}
 
     if user.workspace_status != WorkspaceStatus.READY:
         raise HTTPException(
             status.HTTP_409_CONFLICT,
             "用户工作区尚未就绪，请联系管理员修复",
         )
+    installation = await session.scalar(select(UserProgram).where(
+        UserProgram.user_id == user.id,
+        UserProgram.program_key == program_key,
+    ))
+    if installation is None or installation.workspace_status != WorkspaceStatus.READY:
+        raise HTTPException(status.HTTP_409_CONFLICT, f"程序 {spec.display_name} 尚未就绪")
 
     # 防止同一用户并发提交同时通过排队上限检查。
     await lock_task_submission(session, user.id)
@@ -64,11 +97,16 @@ async def submit_task(
         user_id=user.id,
         status=TaskStatus.QUEUED,
         archive_status=ArchiveStatus.PENDING,
+        program_key=program_key,
+        source_type=choice.source_type if choice else None,
+        stdin_choice=choice.stdin_choice if choice else None,
         params=normalized,
         input_filename=original_filename,
-        program_version=user.program_version,
-        exe_sha256=user.exe_sha256,
-        dll_sha256=user.dll_sha256,
+        parameter_filename=choice.filename if choice else None,
+        parameter_original_filename=original_parameter if choice else None,
+        program_version=installation.program_version,
+        exe_sha256=installation.exe_sha256,
+        dll_sha256=installation.dll_sha256,
     )
     session.add(task)
     await session.flush()  # 取 task.id 用于 staging 目录命名
@@ -76,16 +114,34 @@ async def submit_task(
     max_bytes = (await get_int(session, "max_upload_mb")) * 1024 * 1024
     stage = None
     try:
+        params_content = serialize_params(normalized) if spec.parameter_mode == "structured" else None
         stage = await asyncio.to_thread(
-            create_staging, user.id, task.id, serialize_params(normalized))
+            create_staging, user.id, task.id, params_content,
+            program_key=program_key,
+        )
         size = await write_staged_upload(stage, file, max_bytes=max_bytes)
+        parameter_size = None
+        if choice and parameter_file is not None:
+            parameter_size = await write_staged_upload(
+                stage, parameter_file, max_bytes=max_bytes,
+                destination_name=choice.filename,
+            )
+            task.parameter_sha256 = await asyncio.to_thread(
+                sha256_file, stage / choice.filename)
         await asyncio.to_thread(write_staging_metadata, stage, {
             "task_id": task.id,
             "user_id": user.id,
+            "program_key": program_key,
+            "source_type": task.source_type,
+            "stdin_choice": task.stdin_choice,
+            "parameter_filename": task.parameter_filename,
+            "parameter_original_filename": task.parameter_original_filename,
+            "parameter_sha256": task.parameter_sha256,
             "original_input_filename": original_filename,
             "params": normalized,
             "queued_at": task.queued_at.isoformat() if task.queued_at else utcnow().isoformat(),
             "input_size_bytes": size,
+            "parameter_size_bytes": parameter_size,
         })
         task.staging_dir = staging_relative(user.id, task.id)
     except UploadTooLargeError as exc:
@@ -93,6 +149,11 @@ async def submit_task(
             await asyncio.to_thread(remove_staging, stage)
         await session.rollback()
         raise HTTPException(status.HTTP_413_CONTENT_TOO_LARGE, str(exc)) from exc
+    except ValueError as exc:
+        if stage is not None:
+            await asyncio.to_thread(remove_staging, stage)
+        await session.rollback()
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
     except Exception:
         if stage is not None:
             await asyncio.to_thread(remove_staging, stage)
@@ -129,10 +190,17 @@ async def _archive_queued_task(
             archive_task_files,
             user_id=task.user_id,
             task_id=task.id,
+            program_key=task.program_key,
             staging=stage,
             metadata={
                 "task_id": task.id,
                 "user_id": task.user_id,
+                "program_key": task.program_key,
+                "source_type": task.source_type,
+                "stdin_choice": task.stdin_choice,
+                "parameter_filename": task.parameter_filename,
+                "parameter_original_filename": task.parameter_original_filename,
+                "parameter_sha256": task.parameter_sha256,
                 "original_input_filename": task.input_filename,
                 "params": task.params,
                 "status": final_status,
@@ -168,6 +236,7 @@ async def _archive_queued_task(
     task.archived_at = archived.archived_at
     task.result_file_count = archived.result_file_count
     task.result_size_bytes = archived.result_size_bytes
+    task.runtime_file_hashes = archived.runtime_file_hashes
     task.finished_at = finished
     await session.commit()
     await asyncio.to_thread(remove_staging, stage)

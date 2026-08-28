@@ -24,6 +24,7 @@ from ..models import (
     Task,
     TaskStatus,
     User,
+    UserProgram,
     UserStatus,
     WorkspaceStatus,
     utcnow,
@@ -46,9 +47,12 @@ from ..security import hash_password
 from ..services.audit import audit
 from ..services.config import get_config_map
 from ..services.program_sync import sync_user_program
-from ..services.program_template import ProgramTemplateError, validate_program_template
+from ..services.program_template import (
+    ProgramTemplateError, validate_all_program_templates, validate_program_template,
+)
+from ..services.programs import list_programs
 from ..services.workspace import (
-    WorkspaceError, check_workspace, initialize_workspace, remove_workspace,
+    WorkspaceError, check_all_workspaces, check_workspace, initialize_workspace, remove_workspace,
 )
 
 router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(require_admin)])
@@ -96,7 +100,10 @@ async def _task_items(session: AsyncSession, statuses: str | tuple[str, ...]) ->
     return [
         AdminTaskItem(
             id=t.id, user_id=t.user_id, username=uname, status=t.status,
-            input_filename=t.input_filename, queued_at=t.queued_at, started_at=t.started_at,
+            program_key=t.program_key, source_type=t.source_type,
+            stdin_choice=t.stdin_choice, input_filename=t.input_filename,
+            parameter_filename=t.parameter_filename,
+            queued_at=t.queued_at, started_at=t.started_at,
         )
         for t, uname in rows
     ]
@@ -186,7 +193,7 @@ async def create_user(
     session.add(user)
     await session.flush()
     try:
-        manifest = await asyncio.to_thread(initialize_workspace, user.id)
+        manifests = await asyncio.to_thread(initialize_workspace, user.id)
     except WorkspaceError as exc:
         await session.rollback()
         raise HTTPException(
@@ -195,13 +202,25 @@ async def create_user(
         ) from exc
     user.workspace_status = WorkspaceStatus.READY
     user.workspace_error = None
-    user.program_version = manifest.version
-    user.exe_sha256 = manifest.exe_sha256
-    user.dll_sha256 = manifest.dll_sha256
+    for program_key, manifest in manifests.items():
+        session.add(UserProgram(
+            user_id=user.id,
+            program_key=program_key,
+            workspace_status=WorkspaceStatus.READY,
+            program_version=manifest.version,
+            exe_sha256=manifest.exe_sha256,
+            dll_sha256=manifest.dll_sha256,
+            runtime_file_hashes=manifest.runtime_file_hashes,
+            program_synced_at=utcnow(),
+        ))
+    dcr = manifests["dcr_3d"]
+    user.program_version = dcr.version
+    user.exe_sha256 = dcr.exe_sha256
+    user.dll_sha256 = dcr.dll_sha256
     user.program_synced_at = utcnow()
     audit(session, admin.id, "user.create", target=user.username,
           detail={"user_id": user.id, "role": user.role,
-                  "program_version": manifest.version})
+                  "program_versions": {key: value.version for key, value in manifests.items()}})
     await session.commit()
     return user
 
@@ -341,11 +360,26 @@ async def get_program_template_status(
     admin: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
-    try:
-        manifest = await asyncio.to_thread(validate_program_template)
-        result = {"status": "ready", **manifest.as_dict()}
-    except ProgramTemplateError as exc:
-        result = {"status": "error", "error": str(exc)}
+    items = []
+    for spec in list_programs():
+        try:
+            manifest = await asyncio.to_thread(
+                validate_program_template, program_key=spec.key)
+            items.append({"status": "ready", "name": spec.display_name, **manifest.as_dict()})
+        except ProgramTemplateError as exc:
+            items.append({
+                "status": "error", "program_key": spec.key,
+                "name": spec.display_name, "error": str(exc),
+            })
+    result = {
+        "status": "ready" if all(item["status"] == "ready" for item in items) else "error",
+        "programs": items,
+    }
+    # 一个发布周期内保留旧管理端读取的 DCR 顶层字段。
+    dcr_item = next((item for item in items if item.get("program_key") == "dcr_3d"), None)
+    if dcr_item and dcr_item["status"] == "ready":
+        result.update({key: dcr_item[key] for key in (
+            "version", "exe", "dll", "exe_sha256", "dll_sha256")})
     audit(session, admin.id, "program.template_check", detail=result)
     await session.commit()
     return result
@@ -353,32 +387,61 @@ async def get_program_template_status(
 
 @router.get("/program-sync/status")
 async def get_program_sync_status(session: AsyncSession = Depends(get_session)):
-    users = list((await session.scalars(select(User))).all())
+    total_users = await session.scalar(select(func.count(User.id))) or 0
+    rows = list((await session.scalars(select(UserProgram))).all())
     try:
-        template = await asyncio.to_thread(validate_program_template)
+        manifests = await asyncio.to_thread(validate_all_program_templates)
     except ProgramTemplateError:
-        template = None
-    deferred_ids = {
-        u.id for u in users
-        if u.program_sync_pending and u.workspace_error and "延期" in u.workspace_error
+        manifests = {}
+    programs = []
+    for spec in list_programs():
+        subset = [row for row in rows if row.program_key == spec.key]
+        manifest = manifests.get(spec.key)
+        deferred = [row for row in subset if row.program_sync_pending
+                    and row.workspace_error and "延期" in row.workspace_error]
+        programs.append({
+            "program_key": spec.key,
+            "name": spec.display_name,
+            "template_version": manifest.version if manifest else None,
+            "total": total_users,
+            "synced": sum(1 for row in subset if manifest
+                          and row.program_version == manifest.version
+                          and row.exe_sha256 == manifest.exe_sha256
+                          and row.dll_sha256 == manifest.dll_sha256
+                          and not row.program_sync_pending
+                          and row.workspace_status == WorkspaceStatus.READY),
+            "pending": sum(1 for row in subset if row.program_sync_pending and row not in deferred),
+            "deferred": len(deferred),
+            "failed": sum(1 for row in subset if row.workspace_status == WorkspaceStatus.ERROR),
+            "syncing": sum(1 for row in subset if row.workspace_status == WorkspaceStatus.SYNCING),
+        })
+    ready_users = {
+        user_id for user_id in {row.user_id for row in rows}
+        if all(
+            any(item.program_key == spec.key
+                and item.workspace_status == WorkspaceStatus.READY
+                and not item.program_sync_pending
+                for item in rows if item.user_id == user_id)
+            for spec in list_programs()
+        )
     }
+    deferred_users = {
+        row.user_id for row in rows
+        if row.program_sync_pending and row.workspace_error and "延期" in row.workspace_error
+    }
+    failed_users = {row.user_id for row in rows if row.workspace_status == WorkspaceStatus.ERROR}
+    syncing_users = {row.user_id for row in rows if row.workspace_status == WorkspaceStatus.SYNCING}
+    pending_users = {
+        row.user_id for row in rows if row.program_sync_pending
+    } - deferred_users - failed_users - syncing_users
     return {
-        "template_version": template.version if template else None,
-        "total": len(users),
-        "synced": sum(1 for u in users if template
-                      and u.program_version == template.version
-                      and u.exe_sha256 == template.exe_sha256
-                      and u.dll_sha256 == template.dll_sha256
-                      and not u.program_sync_pending
-                      and u.workspace_status == WorkspaceStatus.READY),
-        "pending": sum(1 for u in users if u.program_sync_pending
-                       and u.id not in deferred_ids
-                       and u.workspace_status not in (
-                           WorkspaceStatus.ERROR, WorkspaceStatus.SYNCING,
-                       )),
-        "deferred": len(deferred_ids),
-        "failed": sum(1 for u in users if u.workspace_status == WorkspaceStatus.ERROR),
-        "syncing": sum(1 for u in users if u.workspace_status == WorkspaceStatus.SYNCING),
+        "total": total_users,
+        "synced": len(ready_users),
+        "pending": len(pending_users),
+        "deferred": len(deferred_users),
+        "failed": len(failed_users),
+        "syncing": len(syncing_users),
+        "programs": programs,
     }
 
 
@@ -388,13 +451,13 @@ async def sync_all_user_programs(
     session: AsyncSession = Depends(get_session),
 ):
     try:
-        manifest = await asyncio.to_thread(validate_program_template)
+        manifests = await asyncio.to_thread(validate_all_program_templates)
     except ProgramTemplateError as exc:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
     user_ids = list((await session.scalars(select(User.id).order_by(User.id))).all())
     results = [await sync_user_program(user_id) for user_id in user_ids]
     summary = {
-        "version": manifest.version,
+        "versions": {key: value.version for key, value in manifests.items()},
         "total": len(results),
         "synced": sum(1 for r in results if r.status == "synced"),
         "deferred": sum(1 for r in results if r.status == "deferred"),
@@ -431,26 +494,35 @@ async def check_one_user_workspace(
     target = await session.get(User, user_id)
     if target is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "用户不存在")
-    result = await asyncio.to_thread(
-        check_workspace,
-        user_id,
-        expected_version=target.program_version,
-        expected_exe_sha256=target.exe_sha256,
-        expected_dll_sha256=target.dll_sha256,
-    )
-    target.workspace_status = WorkspaceStatus.READY if result.ready else WorkspaceStatus.ERROR
-    target.workspace_error = None if result.ready else "；".join(result.errors)
-    audit(session, admin.id, "workspace.check", target=f"user#{user_id}",
-          detail={"ready": result.ready, "errors": list(result.errors)})
-    await session.commit()
-    return {
-        "user_id": user_id,
-        "ready": result.ready,
-        "errors": list(result.errors),
-        "program_version": result.program_version,
-        "exe_sha256": result.exe_sha256,
-        "dll_sha256": result.dll_sha256,
+    checks = await asyncio.to_thread(check_all_workspaces, user_id)
+    rows = {
+        row.program_key: row
+        for row in (await session.scalars(
+            select(UserProgram).where(UserProgram.user_id == user_id)
+        )).all()
     }
+    items = []
+    all_errors: list[str] = []
+    for program_key, result in checks.items():
+        row = rows.get(program_key)
+        if row is not None:
+            row.workspace_status = WorkspaceStatus.READY if result.ready else WorkspaceStatus.ERROR
+            row.workspace_error = None if result.ready else "；".join(result.errors)
+        all_errors.extend(f"{program_key}: {error}" for error in result.errors)
+        items.append({
+            "program_key": program_key,
+            "ready": result.ready,
+            "errors": list(result.errors),
+            "exe_sha256": result.exe_sha256,
+            "dll_sha256": result.dll_sha256,
+        })
+    ready = all(item["ready"] for item in items)
+    target.workspace_status = WorkspaceStatus.READY if ready else WorkspaceStatus.ERROR
+    target.workspace_error = None if ready else "；".join(all_errors)
+    audit(session, admin.id, "workspace.check", target=f"user#{user_id}",
+          detail={"ready": ready, "programs": items})
+    await session.commit()
+    return {"user_id": user_id, "ready": ready, "errors": all_errors, "programs": items}
 
 
 @router.get("/tasks/archive-failures")

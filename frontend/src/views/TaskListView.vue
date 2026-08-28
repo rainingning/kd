@@ -23,6 +23,12 @@
 
       <el-table v-loading="loading" :data="items" border @row-click="onRowClick" row-class-name="task-row">
         <el-table-column prop="id" label="ID" width="80" />
+        <el-table-column label="程序" min-width="190">
+          <template #default="{ row }">{{ programLabel(row.program_key) }}</template>
+        </el-table-column>
+        <el-table-column label="参数选择" width="120">
+          <template #default="{ row }">{{ row.stdin_choice ? `${row.stdin_choice} — ${row.source_type}` : '—' }}</template>
+        </el-table-column>
         <el-table-column label="状态" width="110">
           <template #default="{ row }">
             <StatusTag :status="row.status" />
@@ -89,6 +95,14 @@ const page = ref(1)
 const pageSize = ref(20)
 const statusFilter = ref('')
 const loading = ref(false)
+
+function programLabel(key) {
+  return {
+    dcr_3d: 'DCR_3D',
+    be_fetd: 'BE_FETD',
+    fdem3d_frequency_domain: 'FDEM3D_Frequency_Domain',
+  }[key] || key || '—'
+}
 
 let timer = null
 onMounted(() => {

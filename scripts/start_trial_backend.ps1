@@ -13,5 +13,19 @@ $env:RESULT_ZIP_CACHE_ROOT = Join-Path $repo 'storage\trial-instance\.zip-cache'
 $env:FORTRAN_PROGRAM_TEMPLATE_DIR = Join-Path $repo 'program_template'
 $env:APP_BASE_URL = 'http://127.0.0.1:8000'
 
-Set-Location $backend
-& $python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+$instanceRoot = Join-Path $repo 'storage\trial-instance'
+$pidFile = Join-Path $instanceRoot 'server.pid'
+New-Item -ItemType Directory -Path $instanceRoot -Force | Out-Null
+
+$process = Start-Process -FilePath $python `
+    -ArgumentList @('-m', 'uvicorn', 'app.main:app', '--host', '127.0.0.1', '--port', '8000') `
+    -WorkingDirectory $backend -NoNewWindow -PassThru
+Set-Content -Path $pidFile -Value $process.Id -Encoding ascii
+try {
+    Wait-Process -Id $process.Id
+    $process.Refresh()
+    exit $process.ExitCode
+}
+finally {
+    Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
+}

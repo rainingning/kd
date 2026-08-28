@@ -3,13 +3,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 import shutil
+import subprocess
 from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
 
 import psutil
+from sqlalchemy import select
 
 from .. import db
 from ..config import settings
@@ -19,6 +22,7 @@ from ..models import (
     Task,
     TaskStatus,
     User,
+    UserProgram,
     utcnow,
 )
 from ..services.archive import (
@@ -28,8 +32,11 @@ from ..services.config import get_float, get_int
 from ..services.notifications import notify
 from ..services.program_sync import sync_program_for_locked_user
 from ..services.program_template import ProgramTemplateError, validate_program_template
+from ..services.programs import DCR_3D, get_program, list_programs
 from ..services.staging import remove_staging
-from ..services.storage import STDERR_FILE, path_from_relative, program_exe_path, user_root
+from ..services.storage import (
+    STDERR_FILE, path_from_relative, program_exe_path, program_root, user_root,
+)
 from ..services.workspace import WorkspaceError, prepare_task_workspace
 from . import state
 from .state import RunningEntry
@@ -48,33 +55,38 @@ def _split_configured_command(command: str) -> list[str]:
     return tokens
 
 
-def build_argv(user_id: int) -> list[str]:
-    """构造无参数命令；正式模式仅包含用户目录中的 DCR_3D.exe。"""
+def build_argv(user_id: int, program_key: str = DCR_3D) -> list[str]:
+    """构造无额外参数命令；正式模式只传所选用户程序 exe。"""
     mode = settings.execution_mode.strip().lower()
-    if mode == "dcr3d":
-        return [str(program_exe_path(user_id))]
+    if mode in {"dcr3d", "formal"}:
+        return [str(program_exe_path(user_id, program_key))]
     if mode == "mock":
-        return _split_configured_command(settings.mock_dcr3d_command)
+        command = getattr(settings, "mock_fortran_command", settings.mock_dcr3d_command)
+        return _split_configured_command(command)
     raise ValueError(f"不支持的 EXECUTION_MODE：{settings.execution_mode}")
 
 
 def terminate_orphan_processes(user_id: int) -> int:
-    """终止仍绑定到该用户工作目录的正式程序或固定路径 Mock 进程。"""
-    expected_root = user_root(user_id).resolve()
-    expected_exe = program_exe_path(user_id).resolve()
-    mock_name = "mock_dcr3d.py"
+    """终止仍绑定到该用户任一程序目录的正式或 Mock 进程。"""
+    expected_roots = {
+        program_root(user_id, spec.key).resolve() for spec in list_programs()
+    }
+    expected_exes = {
+        program_exe_path(user_id, spec.key).resolve() for spec in list_programs()
+    }
+    mock_names = {"mock_dcr3d.py", "mock_fortran_solver.py"}
     matches: list[psutil.Process] = []
     for process in psutil.process_iter(["pid", "name", "exe", "cmdline"]):
         try:
             exe_value = process.info.get("exe")
             executable_matches = bool(
-                exe_value and Path(exe_value).resolve() == expected_exe)
+                exe_value and Path(exe_value).resolve() in expected_exes)
             command = [str(value) for value in (process.info.get("cmdline") or [])]
-            mock_matches = any(Path(value).name.lower() == mock_name for value in command)
+            mock_matches = any(Path(value).name.lower() in mock_names for value in command)
             if not executable_matches and not mock_matches:
                 continue
             try:
-                cwd_matches = Path(process.cwd()).resolve() == expected_root
+                cwd_matches = Path(process.cwd()).resolve() in expected_roots
             except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
                 cwd_matches = executable_matches
             if cwd_matches:
@@ -196,6 +208,12 @@ async def finalize_task(
         metadata = {
             "task_id": task.id,
             "user_id": task.user_id,
+            "program_key": task.program_key,
+            "source_type": task.source_type,
+            "stdin_choice": task.stdin_choice,
+            "parameter_filename": task.parameter_filename,
+            "parameter_original_filename": task.parameter_original_filename,
+            "parameter_sha256": task.parameter_sha256,
             "original_input_filename": task.input_filename,
             "params": task.params,
             "status": final_status,
@@ -214,6 +232,7 @@ async def finalize_task(
                 archive_task_files,
                 user_id=task.user_id,
                 task_id=task.id,
+                program_key=task.program_key,
                 staging=staging,
                 metadata=metadata,
                 workspace_was_used=workspace_was_used,
@@ -237,6 +256,7 @@ async def finalize_task(
         task.archived_at = archived.archived_at
         task.result_file_count = archived.result_file_count
         task.result_size_bytes = archived.result_size_bytes
+        task.runtime_file_hashes = archived.runtime_file_hashes
         task.finished_at = finished
         notification = _notification_for(final_status, reason)
         if notification is not None:
@@ -257,53 +277,53 @@ async def finalize_task(
     return True
 
 
-async def _prepare(task_id: int) -> tuple[int, Path] | None:
-    """准备固定工作区并将任务推进到 RUNNING。"""
+async def _prepare(task_id: int) -> tuple[int, Path, str, int | None] | None:
+    """准备所选程序固定工作区并将任务推进到 RUNNING。"""
     async with db.async_session() as session:
         task = await session.get(Task, task_id)
         if task is None or task.status != TaskStatus.PREPARING:
             return None
         user = await session.get(User, task.user_id)
-        if user is None:
+        installation = await session.scalar(select(UserProgram).where(
+            UserProgram.user_id == task.user_id,
+            UserProgram.program_key == task.program_key,
+        ))
+        if user is None or installation is None:
             await finalize_task(
-                task_id,
-                final_status=TaskStatus.FAILED,
-                reason="用户不存在",
-                workspace_was_used=False,
-            )
+                task_id, final_status=TaskStatus.FAILED,
+                reason="用户或程序安装记录不存在", workspace_was_used=False)
             return None
         try:
             staging = path_from_relative(task.staging_dir)
-            if not user.exe_sha256 or not user.dll_sha256:
+            if not installation.exe_sha256 or not installation.dll_sha256:
                 raise WorkspaceError("用户程序版本或 SHA-256 未初始化")
-            await asyncio.to_thread(
+            runtime_hashes = await asyncio.to_thread(
                 prepare_task_workspace,
                 user.id,
                 staging,
-                expected_exe_sha256=user.exe_sha256,
-                expected_dll_sha256=user.dll_sha256,
+                program_key=task.program_key,
+                expected_exe_sha256=installation.exe_sha256,
+                expected_dll_sha256=installation.dll_sha256,
             )
         except (OSError, ValueError, WorkspaceError) as exc:
             await session.rollback()
             await finalize_task(
-                task_id,
-                final_status=TaskStatus.FAILED,
-                reason=f"工作区准备失败：{exc}",
-                workspace_was_used=False,
-            )
+                task_id, final_status=TaskStatus.FAILED,
+                reason=f"工作区准备失败：{exc}", workspace_was_used=False)
             return None
 
-        task.program_version = user.program_version
-        task.exe_sha256 = user.exe_sha256
-        task.dll_sha256 = user.dll_sha256
+        task.program_version = installation.program_version
+        task.exe_sha256 = installation.exe_sha256
+        task.dll_sha256 = installation.dll_sha256
+        task.runtime_file_hashes = runtime_hashes
         task.workspace_was_used = True
         task.status = TaskStatus.RUNNING
         await session.commit()
         logger.info(
-            "任务 #%s 工作区准备完成：user=%s version=%s exe=%s dll=%s",
-            task.id, task.user_id, task.program_version, task.exe_sha256, task.dll_sha256,
+            "任务 #%s 工作区准备完成：user=%s program=%s version=%s",
+            task.id, task.user_id, task.program_key, task.program_version,
         )
-        return task.user_id, staging
+        return task.user_id, staging, task.program_key, task.stdin_choice
 
 
 async def run_task(task_id: int) -> None:
@@ -312,6 +332,7 @@ async def run_task(task_id: int) -> None:
         if task is None or task.status != TaskStatus.PREPARING:
             return
         user_id = task.user_id
+        program_key = task.program_key
 
     async with try_user_workspace_lock(user_id) as acquired:
         if not acquired:
@@ -336,7 +357,8 @@ async def run_task(task_id: int) -> None:
             return
 
         try:
-            await asyncio.to_thread(validate_program_template)
+            await asyncio.to_thread(
+                validate_program_template, program_key=program_key)
         except ProgramTemplateError as exc:
             logger.error("任务 #%s 启动前程序模板校验失败：%s", task_id, exc)
             await finalize_task(
@@ -367,7 +389,14 @@ async def run_task(task_id: int) -> None:
 
         async with db.async_session() as session:
             user = await session.get(User, user_id)
-            sync_pending = bool(user and user.program_sync_pending)
+            installation = await session.scalar(select(UserProgram).where(
+                UserProgram.user_id == user_id,
+                UserProgram.program_key == program_key,
+            ))
+            sync_pending = bool(
+                (user and user.program_sync_pending)
+                or (installation and installation.program_sync_pending)
+            )
         if sync_pending:
             sync_result = await sync_program_for_locked_user(user_id)
             if sync_result.status != "synced":
@@ -382,7 +411,7 @@ async def run_task(task_id: int) -> None:
         prepared = await _prepare(task_id)
         if prepared is None:
             return
-        user_id, staging = prepared
+        user_id, staging, program_key, stdin_choice = prepared
         timeout_sec: float
         async with db.async_session() as session:
             timeout_sec = (await get_float(session, "task_timeout_minutes")) * 60
@@ -394,22 +423,37 @@ async def run_task(task_id: int) -> None:
         returncode: int | None = None
 
         if pending_kind is None:
+            spec = get_program(program_key)
+            cwd = program_root(user_id, program_key)
+            argv = build_argv(user_id, program_key)
+            input_bytes = (
+                f"{stdin_choice}\n".encode("ascii")
+                if spec.requires_stdin else None
+            )
+            env = os.environ.copy()
+            env["GFORTRAN_UNBUFFERED_ALL"] = "1"
+            env["FORT_BUFFERED"] = "0"
+            creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
             with (staging / "stdout.txt").open("wb") as out_f, \
                     (staging / "stderr.txt").open("wb") as err_f:
                 try:
                     proc = await asyncio.create_subprocess_exec(
-                        *build_argv(user_id),
-                        cwd=str(user_root(user_id)),
+                        *argv,
+                        cwd=str(cwd),
+                        stdin=(asyncio.subprocess.PIPE if spec.requires_stdin
+                               else asyncio.subprocess.DEVNULL),
                         stdout=out_f,
                         stderr=err_f,
+                        env=env,
+                        creationflags=creationflags,
                     )
                 except Exception as exc:
                     logger.exception("任务 #%s 启动失败", task_id)
                     start_error = f"任务启动失败：{exc}"
                 else:
                     logger.info(
-                        "任务 #%s 进程已启动：pid=%s cwd=%s argv=%s",
-                        task_id, proc.pid, user_root(user_id), build_argv(user_id),
+                        "任务 #%s 进程已启动：pid=%s program=%s cwd=%s argv=%s stdin_choice=%s",
+                        task_id, proc.pid, program_key, cwd, argv, stdin_choice,
                     )
                     entry = RunningEntry(proc=proc)
                     state.running[task_id] = entry
@@ -418,13 +462,21 @@ async def run_task(task_id: int) -> None:
                         entry.cancel_kind = raced_cancel
                         _kill_process_tree(proc.pid)
                     try:
-                        await asyncio.wait_for(proc.wait(), timeout=timeout_sec)
+                        await asyncio.wait_for(
+                            proc.communicate(input=input_bytes), timeout=timeout_sec)
                         returncode = proc.returncode
                     except asyncio.TimeoutError:
                         timed_out = True
                         _kill_process_tree(proc.pid)
+                        try:
+                            await proc.communicate()
+                        except (BrokenPipeError, ConnectionResetError):
+                            await proc.wait()
+                        returncode = proc.returncode
+                    except (BrokenPipeError, ConnectionResetError) as exc:
                         await proc.wait()
                         returncode = proc.returncode
+                        start_error = f"向程序标准输入写入参数选择失败：{exc}"
                     finally:
                         state.running.pop(task_id, None)
                         state.cancel_requests.pop(task_id, None)
@@ -440,12 +492,12 @@ async def run_task(task_id: int) -> None:
             return  # 保持 RUNNING，下一次启动保护并归档工作区现场。
 
         cancel_kind = pending_kind or (entry.cancel_kind if entry is not None else None)
-        if start_error is not None:
-            final_status, reason = TaskStatus.FAILED, start_error
-        elif cancel_kind == "user":
+        if cancel_kind == "user":
             final_status, reason = TaskStatus.CANCELED, "用户取消"
         elif cancel_kind == "admin":
             final_status, reason = TaskStatus.FAILED, "被管理员终止"
+        elif start_error is not None:
+            final_status, reason = TaskStatus.FAILED, start_error
         elif timed_out:
             final_status = TaskStatus.FAILED
             reason = f"运行超时（超过 {timeout_sec / 60:g} 分钟）"

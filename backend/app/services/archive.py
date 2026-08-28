@@ -1,4 +1,4 @@
-"""任务版本归档：临时目录完成后原子发布。"""
+"""程序感知的任务版本归档：临时目录完成后原子发布。"""
 from __future__ import annotations
 
 import json
@@ -10,11 +10,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .program_template import sha256_file
+from .programs import DCR_3D, MESH_DIR, MESH_FILE, RESULT_DIR, get_program
 from .storage import (
-    MESH_DIR,
-    MESH_FILE,
-    PARAMS_FILE,
-    RESULT_DIR,
     STDERR_FILE,
     STDOUT_FILE,
     TASK_META_FILE,
@@ -38,11 +36,11 @@ class ArchiveResult:
     archived_at: datetime
     result_file_count: int
     result_size_bytes: int
+    runtime_file_hashes: dict[str, str]
 
 
 def archive_version(task_id: int, archived_at: datetime | None = None) -> str:
-    instant = archived_at or datetime.now(timezone.utc)
-    instant = instant.astimezone(timezone.utc)
+    instant = (archived_at or datetime.now(timezone.utc)).astimezone(timezone.utc)
     stamp = instant.strftime("%Y%m%dT%H%M%S") + f".{instant.microsecond // 1000:03d}Z"
     return f"{stamp}_task{task_id}"
 
@@ -63,17 +61,11 @@ def _copy_optional(source: Path, destination: Path) -> None:
 
 
 def _result_stats(directory: Path) -> tuple[int, int]:
-    count = 0
-    size = 0
-    for path in directory.rglob("*"):
-        if path.is_file():
-            count += 1
-            size += path.stat().st_size
-    return count, size
+    files = [path for path in directory.rglob("*") if path.is_file()]
+    return len(files), sum(path.stat().st_size for path in files)
 
 
 def remove_temporary_archives(user_id: int) -> int:
-    """用户锁内清理未发布的临时归档目录。正式归档目录永不删除。"""
     root = archives_root(user_id)
     if not root.is_dir():
         return 0
@@ -92,14 +84,11 @@ def archive_task_files(
     staging: Path,
     metadata: dict[str, Any],
     workspace_was_used: bool,
+    program_key: str = DCR_3D,
     archived_at: datetime | None = None,
     version: str | None = None,
 ) -> ArchiveResult:
-    """归档任务文件。
-
-    运行过的任务从固定工作区取参数/输入/Forward_data；未运行的排队取消任务
-    从 staging 取参数/输入，并生成空 Forward_data。
-    """
+    spec = get_program(program_key)
     instant = (archived_at or datetime.now(timezone.utc)).astimezone(timezone.utc)
     version = version or archive_version(task_id, instant)
     root = archives_root(user_id)
@@ -110,13 +99,13 @@ def archive_task_files(
             existing = json.loads((destination / TASK_META_FILE).read_text(encoding="utf-8"))
             if existing.get("task_id") != task_id:
                 raise ArchiveError(f"归档版本冲突：{version}")
-            existing_time = datetime.fromisoformat(existing["archived_at"])
             return ArchiveResult(
                 version=version,
                 relative_dir=relative_to_storage(destination),
-                archived_at=existing_time,
+                archived_at=datetime.fromisoformat(existing["archived_at"]),
                 result_file_count=int(existing["result_file_count"]),
                 result_size_bytes=int(existing["result_size_bytes"]),
+                runtime_file_hashes=dict(existing.get("runtime_file_hashes") or {}),
             )
         except ArchiveError:
             raise
@@ -126,27 +115,31 @@ def archive_task_files(
 
     try:
         temporary.mkdir(parents=False, exist_ok=False)
-        if workspace_was_used:
-            params_source = params_path(user_id)
-            mesh_source = mesh_path(user_id)
-        else:
-            params_source = staging / PARAMS_FILE
-            mesh_source = staging / MESH_FILE
-
-        _copy_required(params_source, temporary / PARAMS_FILE)
+        runtime_hashes: dict[str, str] = {}
+        for filename in spec.parameter_files:
+            source = (
+                params_path(user_id, program_key, filename)
+                if workspace_was_used else staging / filename
+            )
+            _copy_required(source, temporary / filename)
+            runtime_hashes[filename] = sha256_file(temporary / filename)
+        mesh_source = mesh_path(user_id, program_key) if workspace_was_used else staging / MESH_FILE
         _copy_required(mesh_source, temporary / MESH_DIR / MESH_FILE)
         _copy_optional(staging / STDOUT_FILE, temporary / STDOUT_FILE)
         _copy_optional(staging / STDERR_FILE, temporary / STDERR_FILE)
 
         archived_results = temporary / RESULT_DIR
-        if workspace_was_used and result_dir(user_id).is_dir():
-            shutil.copytree(result_dir(user_id), archived_results)
+        workspace_results = result_dir(user_id, program_key)
+        if workspace_was_used and workspace_results.is_dir():
+            shutil.copytree(workspace_results, archived_results)
         else:
             archived_results.mkdir(parents=True, exist_ok=True)
         result_count, result_size = _result_stats(archived_results)
 
         task_metadata = dict(metadata)
         task_metadata.update({
+            "program_key": program_key,
+            "runtime_file_hashes": runtime_hashes,
             "archive_version": version,
             "archived_at": instant.isoformat(),
             "result_file_count": result_count,
@@ -154,8 +147,7 @@ def archive_task_files(
         })
         (temporary / TASK_META_FILE).write_text(
             json.dumps(task_metadata, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-            newline="\n",
+            encoding="utf-8", newline="\n",
         )
         os.replace(temporary, destination)
     except Exception as exc:
@@ -170,4 +162,5 @@ def archive_task_files(
         archived_at=instant,
         result_file_count=result_count,
         result_size_bytes=result_size,
+        runtime_file_hashes=runtime_hashes,
     )

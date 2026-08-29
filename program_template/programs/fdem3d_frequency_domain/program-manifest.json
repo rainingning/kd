@@ -3,10 +3,10 @@
   "version": "mock-trial-4.0.0",
   "exe": "FDEM3D_Frequency_Domain.exe",
   "dll": "libiomp5md.dll",
-  "exe_sha256": "a4568f5db6dfa72e5d2d9d9f55aeb8f1ea654641c43472897cfc84f2003b2caf",
-  "dll_sha256": "e0221a75f5981dbe59eb301a49cff37e973f4ee76999df8732a562251e01c658",
+  "exe_sha256": "c7d0d280046d02eb2e5221ee93eff44e1c4cf7918c7d4997619a615be65e3772",
+  "dll_sha256": "6a783ef7b4aba2b2926ac11eb31fb6f4d63ed5cfc01c5b8680dc38a1d53a1bca",
   "parameter_sha256": {
-    "GroundedWireSource.dat": "d4532332f0c8bf00d2ddf0cda702bec6be7009bc2311ecaff25947376b05c2f5",
-    "LoopSource.dat": "f80571590b41123ab7b5b0d70ffdf98ee37df20f699bc10dc0ab1f7250d5c266"
+    "GroundedWireSource.dat": "f05c191b142c530070230c5d5194f5178cdf38699ca128326e5ff5f1b302e232",
+    "LoopSource.dat": "57c1c52125df5dea9c9e0551022432705f23911802312c5c6b103f8b8c590efb"
   }
 }

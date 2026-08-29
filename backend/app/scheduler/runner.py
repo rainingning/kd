@@ -149,6 +149,18 @@ def _append_failure_log(staging: Path, reason: str) -> None:
     stderr.write_text(f"[platform] {reason}\n", encoding="utf-8", newline="\n")
 
 
+def _normalize_exit_code(code: int | None) -> int | None:
+    """Windows 以无符号 32 位返回进程退出码（如崩溃码 0xC0000142 = 3221225794），
+    转换为有符号 int32 以适配 tasks.exit_code 的 Integer 列，避免 asyncpg int4 溢出。"""
+    if code is None:
+        return None
+    if code > 2**31 - 1:
+        code -= 2**32
+    elif code < -(2**31):
+        code += 2**32
+    return code
+
+
 def _schedule_archive_retry(task: Task) -> None:
     task.archive_retry_count = (task.archive_retry_count or 0) + 1
     delay_seconds = min(5 * (2 ** (task.archive_retry_count - 1)), 300)
@@ -174,6 +186,7 @@ async def finalize_task(
     exit_code: int | None = None,
 ) -> bool:
     """先持久化 ARCHIVING，再原子归档，最后落业务终态并通知。"""
+    exit_code = _normalize_exit_code(exit_code)
     async with db.async_session() as session:
         task = await session.get(Task, task_id)
         if task is None:

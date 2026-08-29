@@ -1,27 +1,27 @@
 <template>
   <div class="dcr-page">
-    <el-card class="toolbar-card" shadow="never">
-      <div class="toolbar">
-        <div>
+    <el-card class="dcr-control-card" shadow="never">
+      <div class="dcr-control-header">
+        <div class="dcr-heading">
           <h2>DCR 参数工作区 <el-tag v-if="dirty" type="warning" size="small">未保存</el-tag></h2>
-          <div class="meta">来源：{{ sourceLabel }}<span v-if="updatedAt"> · 更新于 {{ formatDate(updatedAt) }}</span><span v-if="baseSha"> · SHA {{ baseSha.slice(0, 12) }}</span></div>
-        </div>
-        <div class="actions">
-          <el-upload ref="uploadRef" :auto-upload="false" :show-file-list="false" accept=".dat" :on-change="onUpload"><el-button :loading="parsing">导入 .dat</el-button></el-upload>
-          <el-button :loading="loadingDefault" @click="loadDefault">载入默认</el-button>
-          <el-button :disabled="!baseSha" @click="downloadCurrent">下载当前</el-button>
-          <el-button type="primary" :loading="saving" :disabled="!dirty || loading" @click="save">保存</el-button>
+          <div class="dcr-meta">来源：{{ sourceLabel }}<span v-if="updatedAt"> · 更新于 {{ formatDate(updatedAt) }}</span><span v-if="baseSha"> · SHA {{ baseSha.slice(0, 12) }}</span></div>
         </div>
       </div>
-      <el-alert v-for="(warning, i) in warnings" :key="i" type="warning" :title="String(warning)" :closable="false" class="warning" />
-      <el-alert v-if="conflictMessage" type="error" :title="conflictMessage" :closable="false" show-icon class="warning" />
+      <div class="dcr-control-actions">
+        <el-upload ref="uploadRef" :auto-upload="false" :show-file-list="false" accept=".dat" :on-change="onUpload"><el-button :loading="parsing">导入 .dat</el-button></el-upload>
+        <el-button :loading="loadingDefault" @click="loadDefault">载入默认</el-button>
+        <el-button :disabled="!baseSha" @click="downloadCurrent">下载当前</el-button>
+        <el-button type="primary" :loading="saving" :disabled="!dirty || loading" @click="save">保存</el-button>
+      </div>
+      <el-alert v-for="(warning, i) in warnings" :key="i" type="warning" :title="String(warning)" :closable="false" class="dcr-notice" />
+      <el-alert v-if="conflictMessage" type="error" :title="conflictMessage" :closable="false" show-icon class="dcr-notice" />
     </el-card>
 
-    <div class="layout">
-      <main v-loading="loading" class="editor"><DcrParamForm ref="formRef" v-model="document" /></main>
-      <aside>
+    <div class="dcr-content-grid">
+      <main v-loading="loading" class="dcr-editor"><DcrParamForm ref="formRef" v-model="document" /></main>
+      <aside class="dcr-archive-column">
         <el-card shadow="never">
-          <template #header><div class="archive-head"><span>归档版本</span><el-button link :loading="versionsLoading" @click="loadVersions">刷新</el-button></div></template>
+          <template #header><div class="dcr-archive-head"><span>归档版本</span><el-button link :loading="versionsLoading" @click="loadVersions">刷新</el-button></div></template>
           <el-table :data="versions" size="small" max-height="560" @row-click="loadVersion">
             <el-table-column label="任务" min-width="76"><template #default="{ row }">#{{ taskId(row) }}</template></el-table-column>
             <el-table-column label="时间" min-width="112"><template #default="{ row }">{{ formatDate(row.updated_at || row.created_at || row.archived_at) }}</template></el-table-column>
@@ -29,7 +29,7 @@
             <template #empty>暂无归档版本</template>
           </el-table>
           <el-pagination v-if="versionsTotal > pageSize" small layout="prev, pager, next" :total="versionsTotal" :page-size="pageSize" v-model:current-page="page" @current-change="loadVersions" />
-          <div class="archive-tip">点击版本载入编辑器；保存时会记录来源任务。</div>
+          <div class="dcr-archive-tip">点击版本载入编辑器；保存时会记录来源任务。</div>
         </el-card>
       </aside>
     </div>
@@ -130,7 +130,142 @@ function formatDate(value) { if (!value) return '—'; const date = new Date(val
 </script>
 
 <style scoped>
-.dcr-page { max-width: 1480px; margin: 0 auto; padding: 20px; }.toolbar-card { margin-bottom: 18px; }.toolbar,.actions,.archive-head { display:flex; justify-content:space-between; align-items:center; gap:12px; }.toolbar h2 { margin:0 0 6px; font-size:22px; }.meta,.archive-tip { color:#909399; font-size:12px; }.actions { flex-wrap:wrap; justify-content:flex-end; }.warning { margin-top:12px; }.layout { display:grid; grid-template-columns:minmax(0,1fr) 300px; gap:18px; align-items:start; }.editor { min-height:300px; }.archive-head { font-weight:600; }.archive-tip { margin-top:12px; line-height:1.5; }.el-pagination { margin-top:14px; justify-content:center; }
-@media (max-width: 980px) { .layout { grid-template-columns:1fr; }.toolbar { align-items:flex-start; flex-direction:column; }.actions { justify-content:flex-start; } }
-@media (max-width: 640px) { .dcr-page { padding:10px; }.actions { width:100%; }.actions :deep(.el-button) { margin-left:0; } }
+.dcr-page {
+  max-width: 1480px;
+  margin: 0 auto;
+  padding: 20px;
+}
+
+.dcr-control-card {
+  position: static;
+  z-index: auto;
+  width: 100%;
+  margin: 0 0 18px;
+  color: #303133;
+  background: #fff;
+}
+
+.dcr-control-card :deep(.el-card__body) {
+  position: static;
+  display: block;
+  padding: 20px;
+  color: #303133;
+  background: #fff;
+}
+
+.dcr-control-header {
+  position: static;
+  display: flex;
+  width: 100%;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.dcr-heading {
+  min-width: 0;
+}
+
+.dcr-heading h2 {
+  margin: 0 0 6px;
+  color: #303133;
+  font-size: 22px;
+  line-height: 1.4;
+}
+
+.dcr-meta,
+.dcr-archive-tip {
+  color: #909399;
+  font-size: 12px;
+}
+
+.dcr-meta {
+  overflow-wrap: anywhere;
+  line-height: 1.6;
+}
+
+.dcr-control-actions {
+  position: static;
+  display: flex;
+  width: 100%;
+  margin-top: 16px;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.dcr-control-actions :deep(.el-upload) {
+  display: inline-flex;
+  align-items: center;
+}
+
+.dcr-control-actions :deep(.el-button) {
+  margin-left: 0;
+}
+
+.dcr-notice {
+  margin-top: 12px;
+}
+
+.dcr-content-grid {
+  position: static;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: 18px;
+  align-items: start;
+  width: 100%;
+}
+
+.dcr-editor {
+  position: relative;
+  min-width: 0;
+  min-height: 300px;
+}
+
+.dcr-archive-column {
+  min-width: 0;
+}
+
+.dcr-archive-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-weight: 600;
+}
+
+.dcr-archive-tip {
+  margin-top: 12px;
+  line-height: 1.5;
+}
+
+.el-pagination {
+  margin-top: 14px;
+  justify-content: center;
+}
+
+@media (max-width: 980px) {
+  .dcr-content-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .dcr-control-actions {
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 640px) {
+  .dcr-page {
+    padding: 10px;
+  }
+
+  .dcr-control-card :deep(.el-card__body) {
+    padding: 16px;
+  }
+
+  .dcr-control-actions {
+    justify-content: flex-start;
+    gap: 8px;
+  }
+}
 </style>

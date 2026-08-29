@@ -1,27 +1,28 @@
 <template>
   <div class="page-container">
-    <el-card class="page-card">
+    <el-card class="page-card task-list-card">
       <template #header>
         <div class="card-header">
           <span class="title">任务列表</span>
         </div>
       </template>
 
-      <div class="toolbar">
+      <section class="task-list-controls" aria-label="任务列表过滤和刷新">
         <el-select
           v-model="statusFilter"
+          class="task-list-status-filter"
           placeholder="全部状态"
           clearable
-          style="width: 160px"
           @change="onFilterChange"
         >
           <el-option v-for="(meta, s) in TASK_STATUS" :key="s" :label="meta.label" :value="s" />
         </el-select>
-        <el-button :icon="Refresh" @click="load()">刷新</el-button>
-        <span class="text-muted tip">每 5 秒自动刷新</span>
-      </div>
+        <el-button class="task-list-refresh-button" :icon="Refresh" @click="load()">刷新</el-button>
+        <span class="task-list-refresh-tip">每 5 秒自动刷新</span>
+      </section>
 
-      <el-table v-loading="loading" :data="items" border @row-click="onRowClick" row-class-name="task-row">
+      <div class="task-list-table-wrap">
+        <el-table v-loading="loading" :data="items" border @row-click="onRowClick" row-class-name="task-row">
         <el-table-column prop="id" label="ID" width="80" />
         <el-table-column label="程序" min-width="190">
           <template #default="{ row }">{{ programLabel(row.program_key) }}</template>
@@ -60,10 +61,11 @@
             </el-button>
           </template>
         </el-table-column>
-        <template #empty>暂无任务</template>
-      </el-table>
+          <template #empty>暂无任务</template>
+        </el-table>
+      </div>
 
-      <div class="pager">
+      <div class="task-list-pager">
         <el-pagination
           v-model:current-page="page"
           v-model:page-size="pageSize"
@@ -170,17 +172,87 @@ async function onCancel(row) {
 </script>
 
 <style scoped>
-.tip {
-  font-size: 13px;
+.task-list-card :deep(.el-card__body) {
+  position: static;
+  display: block;
+  color: #303133;
+  background: #fff;
 }
 
-.pager {
+.task-list-controls {
+  position: static;
+  z-index: auto;
   display: flex;
-  justify-content: flex-end;
+  width: 100%;
+  margin: 0 0 16px;
+  padding: 12px 14px;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  color: #303133;
+  background: #f5f7fa;
+  border: 1px solid #e4e7ed;
+  border-radius: 4px;
+  box-shadow: none;
+  transform: none;
+}
+
+.task-list-status-filter {
+  width: 160px;
+  flex: 0 0 160px;
+}
+
+.task-list-refresh-button {
+  position: static;
+  margin-left: 0;
+}
+
+.task-list-refresh-tip {
+  color: #606266;
+  background: transparent;
+  font-size: 13px;
+  line-height: 32px;
+  white-space: nowrap;
+}
+
+.task-list-table-wrap {
+  position: relative;
+  z-index: auto;
+  clear: both;
+  width: 100%;
+  min-width: 0;
+  margin-top: 0;
+}
+
+.task-list-pager {
+  display: flex;
+  min-width: 0;
   margin-top: 16px;
+  justify-content: flex-end;
+  overflow-x: auto;
 }
 
 :deep(.task-row) {
   cursor: pointer;
+}
+
+@media (max-width: 640px) {
+  .task-list-controls {
+    padding: 10px;
+    gap: 8px;
+  }
+
+  .task-list-status-filter {
+    width: min(100%, 220px);
+    flex-basis: min(100%, 220px);
+  }
+
+  .task-list-refresh-tip {
+    flex: 1 1 auto;
+  }
+
+  .task-list-pager {
+    justify-content: flex-start;
+  }
 }
 </style>

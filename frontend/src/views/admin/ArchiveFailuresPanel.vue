@@ -6,9 +6,10 @@
       :closable="false"
       class="panel-alert"
     />
-    <div class="toolbar">
+    <AdminPanelControls label="归档异常刷新">
       <el-button :icon="Refresh" :loading="loading" @click="load">刷新</el-button>
-    </div>
+    </AdminPanelControls>
+    <div class="admin-archive-table-wrap">
     <el-table v-loading="loading" :data="items" border>
       <el-table-column prop="id" label="任务 ID" width="100" />
       <el-table-column prop="user_id" label="用户 ID" width="100" />
@@ -31,6 +32,7 @@
       </el-table-column>
       <template #empty>当前没有归档失败任务</template>
     </el-table>
+    </div>
   </div>
 </template>
 
@@ -40,6 +42,7 @@ import { ElMessage } from 'element-plus'
 import { Refresh } from '@element-plus/icons-vue'
 import { adminApi } from '../../api/admin'
 import { formatTime } from '../../utils/format'
+import AdminPanelControls from './AdminPanelControls.vue'
 
 const items = ref([])
 const loading = ref(false)
@@ -77,7 +80,11 @@ async function retry(row) {
   margin-bottom: 16px;
 }
 
-.toolbar {
-  margin-bottom: 12px;
+.admin-archive-table-wrap {
+  position: relative;
+  z-index: auto;
+  clear: both;
+  width: 100%;
+  min-width: 0;
 }
 </style>

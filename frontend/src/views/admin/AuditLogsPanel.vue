@@ -1,18 +1,19 @@
 <template>
   <div>
-    <div class="toolbar">
+    <AdminPanelControls label="审计日志过滤和刷新">
       <el-select
         v-model="actionFilter"
+        class="admin-audit-filter"
         placeholder="全部操作类型"
         clearable
-        style="width: 220px"
         @change="onFilterChange"
       >
         <el-option v-for="(label, action) in ACTION_LABELS" :key="action" :label="label" :value="action" />
       </el-select>
       <el-button @click="load()">刷新</el-button>
-    </div>
+    </AdminPanelControls>
 
+    <div class="admin-audit-table-wrap">
     <el-table v-loading="loading" :data="items" border size="small">
       <el-table-column prop="id" label="ID" width="70" />
       <el-table-column label="时间" width="170">
@@ -37,8 +38,9 @@
       </el-table-column>
       <template #empty>暂无审计日志</template>
     </el-table>
+    </div>
 
-    <div class="pager">
+    <div class="admin-audit-pager">
       <el-pagination
         v-model:current-page="page"
         :page-size="pageSize"
@@ -54,6 +56,7 @@
 import { onMounted, ref } from 'vue'
 import { adminApi } from '../../api/admin'
 import { formatTime } from '../../utils/format'
+import AdminPanelControls from './AdminPanelControls.vue'
 
 const ACTION_LABELS = {
   'task.kill': '终止任务',
@@ -99,15 +102,41 @@ function onFilterChange() {
 </script>
 
 <style scoped>
-.pager {
+.admin-audit-filter {
+  width: 220px;
+  flex: 0 1 220px;
+}
+
+.admin-audit-table-wrap {
+  position: relative;
+  z-index: auto;
+  clear: both;
+  width: 100%;
+  min-width: 0;
+}
+
+.admin-audit-pager {
   display: flex;
+  min-width: 0;
   justify-content: flex-end;
   margin-top: 16px;
+  overflow-x: auto;
 }
 
 .detail-code {
   font-size: 12px;
   color: #606266;
   word-break: break-all;
+}
+
+@media (max-width: 640px) {
+  .admin-audit-filter {
+    width: min(100%, 260px);
+    flex-basis: min(100%, 260px);
+  }
+
+  .admin-audit-pager {
+    justify-content: flex-start;
+  }
 }
 </style>

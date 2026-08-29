@@ -1,18 +1,19 @@
 <template>
   <div>
-    <div class="toolbar">
+    <AdminPanelControls label="用户搜索和创建">
       <el-input
         v-model="keyword"
+        class="admin-user-search-input"
         placeholder="按用户名或邮箱搜索"
         clearable
-        style="width: 240px"
         @keyup.enter="onSearch"
         @clear="onSearch"
       />
       <el-button @click="onSearch">搜索</el-button>
       <el-button type="primary" @click="openCreate">创建用户</el-button>
-    </div>
+    </AdminPanelControls>
 
+    <div class="admin-user-table-wrap">
     <el-table v-loading="loading" :data="items" border size="small">
       <el-table-column prop="id" label="ID" width="70" />
       <el-table-column prop="username" label="用户名" width="140" />
@@ -90,8 +91,9 @@
       </el-table-column>
       <template #empty>暂无用户</template>
     </el-table>
+    </div>
 
-    <div class="pager">
+    <div class="admin-user-pager">
       <el-pagination
         v-model:current-page="page"
         v-model:page-size="pageSize"
@@ -154,6 +156,7 @@ import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { adminApi } from '../../api/admin'
 import { formatTime } from '../../utils/format'
+import AdminPanelControls from './AdminPanelControls.vue'
 
 const items = ref([])
 const total = ref(0)
@@ -359,10 +362,36 @@ async function copyTempPassword() {
   margin-left: 6px;
 }
 
-.pager {
+.admin-user-search-input {
+  width: 240px;
+  flex: 0 1 240px;
+}
+
+.admin-user-table-wrap {
+  position: relative;
+  z-index: auto;
+  clear: both;
+  width: 100%;
+  min-width: 0;
+}
+
+.admin-user-pager {
   display: flex;
+  min-width: 0;
   justify-content: flex-end;
   margin-top: 16px;
+  overflow-x: auto;
+}
+
+@media (max-width: 640px) {
+  .admin-user-search-input {
+    width: min(100%, 280px);
+    flex-basis: min(100%, 280px);
+  }
+
+  .admin-user-pager {
+    justify-content: flex-start;
+  }
 }
 
 .temp-alert {

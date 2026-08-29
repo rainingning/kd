@@ -55,10 +55,11 @@
             通知
             <el-badge v-if="notify.unreadCount" :value="notify.unreadCount" :max="99" class="tab-badge" />
           </template>
-          <div class="toolbar">
-            <el-checkbox v-model="unreadOnly" @change="onFilterChange">只看未读</el-checkbox>
-            <el-button size="small" @click="loadNotifications()">刷新</el-button>
+          <section class="profile-notification-controls" aria-label="通知过滤和批量操作">
+            <el-checkbox class="profile-notification-filter" v-model="unreadOnly" @change="onFilterChange">只看未读</el-checkbox>
+            <el-button class="profile-notification-action" size="small" @click="loadNotifications()">刷新</el-button>
             <el-button
+              class="profile-notification-action"
               size="small"
               type="primary"
               plain
@@ -67,32 +68,32 @@
             >
               全部标为已读
             </el-button>
-          </div>
-          <div v-loading="notifLoading">
+          </section>
+          <div v-loading="notifLoading" class="profile-notification-list">
             <template v-if="notifications.length">
               <div
                 v-for="n in notifications"
                 :key="n.id"
-                class="notification-item"
-                :class="{ unread: !n.read }"
+                class="profile-notification-item"
+                :class="{ 'profile-notification-item--unread': !n.read }"
                 @click="onClickNotification(n)"
               >
-                <div class="msg">
+                <div class="profile-notification-message">
                   <el-tag
                     :type="NOTIFICATION_TYPE[n.type]?.type || 'info'"
                     size="small"
-                    class="type-tag"
+                    class="profile-notification-type"
                   >
                     {{ NOTIFICATION_TYPE[n.type]?.label || n.type }}
                   </el-tag>
                   {{ n.message }}
                 </div>
-                <div class="time">{{ formatTime(n.created_at) }}</div>
+                <div class="profile-notification-time">{{ formatTime(n.created_at) }}</div>
               </div>
             </template>
             <el-empty v-else description="暂无通知" />
           </div>
-          <div class="pager">
+          <div class="profile-notification-pager">
             <el-pagination
               v-model:current-page="notifPage"
               :page-size="notifPageSize"
@@ -265,13 +266,103 @@ async function onMarkAllRead() {
   vertical-align: 2px;
 }
 
-.type-tag {
+.profile-notification-controls {
+  position: static;
+  z-index: auto;
+  display: flex;
+  width: 100%;
+  margin: 0 0 16px;
+  padding: 12px 14px;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  color: #303133;
+  background: #f5f7fa;
+  border: 1px solid #e4e7ed;
+  border-radius: 4px;
+  box-shadow: none;
+  transform: none;
+}
+
+.profile-notification-filter {
+  position: static;
+  margin-right: 0;
+}
+
+.profile-notification-filter :deep(.el-checkbox__label) {
+  color: #303133;
+}
+
+.profile-notification-action {
+  position: static;
+  margin-left: 0;
+}
+
+.profile-notification-list {
+  position: relative;
+  z-index: auto;
+  clear: both;
+  width: 100%;
+  min-width: 0;
+  color: #303133;
+  background: #fff;
+}
+
+.profile-notification-item {
+  position: static;
+  padding: 12px 16px;
+  color: #303133;
+  background: #fff;
+  border-bottom: 1px solid #ebeef5;
+  cursor: pointer;
+}
+
+.profile-notification-item:hover {
+  background: #f5f7fa;
+}
+
+.profile-notification-item--unread {
+  background: #ecf5ff;
+}
+
+.profile-notification-item--unread:hover {
+  background: #e6f1fc;
+}
+
+.profile-notification-message {
+  color: #303133;
+  font-size: 14px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.profile-notification-time {
+  margin-top: 4px;
+  color: #909399;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.profile-notification-type {
   margin-right: 8px;
 }
 
-.pager {
+.profile-notification-pager {
   display: flex;
-  justify-content: flex-end;
+  min-width: 0;
   margin-top: 16px;
+  justify-content: flex-end;
+  overflow-x: auto;
+}
+
+@media (max-width: 640px) {
+  .profile-notification-controls {
+    padding: 10px;
+    gap: 8px;
+  }
+
+  .profile-notification-pager {
+    justify-content: flex-start;
+  }
 }
 </style>

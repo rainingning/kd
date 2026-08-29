@@ -1,10 +1,11 @@
 <template>
   <div v-loading="loading && !loaded">
-    <div class="toolbar">
+    <AdminPanelControls label="任务监控刷新">
       <el-button size="small" @click="load()">刷新</el-button>
-      <span class="text-muted tip">每 5 秒自动刷新</span>
-    </div>
+      <span class="admin-task-refresh-tip">每 5 秒自动刷新</span>
+    </AdminPanelControls>
 
+    <div class="admin-task-lists">
     <el-divider content-position="left">活动任务（{{ running.length }}）</el-divider>
     <el-table :data="running" border size="small">
       <el-table-column prop="id" label="ID" width="80" />
@@ -72,6 +73,7 @@
       </el-table-column>
       <template #empty>队列为空</template>
     </el-table>
+    </div>
   </div>
 </template>
 
@@ -80,6 +82,7 @@ import { onMounted, onUnmounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { adminApi } from '../../api/admin'
 import { elapsedSince, formatTime, TASK_STATUS } from '../../utils/format'
+import AdminPanelControls from './AdminPanelControls.vue'
 
 const running = ref([])
 const queued = ref([])
@@ -141,7 +144,19 @@ async function onKill(row) {
 </script>
 
 <style scoped>
-.tip {
+.admin-task-refresh-tip {
+  color: #606266;
+  background: transparent;
   font-size: 13px;
+  line-height: 24px;
+  white-space: nowrap;
+}
+
+.admin-task-lists {
+  position: relative;
+  z-index: auto;
+  clear: both;
+  width: 100%;
+  min-width: 0;
 }
 </style>

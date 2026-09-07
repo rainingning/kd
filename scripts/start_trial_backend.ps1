@@ -7,7 +7,7 @@ $dbUrl = & $python -c "import sys; sys.path.insert(0, r'$backend'); from app.con
 if ($LASTEXITCODE -ne 0) { throw 'Unable to derive trial database URL' }
 
 $env:DATABASE_URL = $dbUrl.Trim()
-$env:EXECUTION_MODE = 'mock'
+$env:EXECUTION_MODE = 'formal'
 $env:STORAGE_ROOT = Join-Path $repo 'storage\trial-instance'
 $env:RESULT_ZIP_CACHE_ROOT = Join-Path $repo 'storage\trial-instance\.zip-cache'
 $env:FORTRAN_PROGRAM_TEMPLATE_DIR = Join-Path $repo 'program_template'

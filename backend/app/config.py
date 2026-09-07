@@ -19,10 +19,10 @@ class Settings(BaseSettings):
     # 文件存储根目录（每用户固定工作区 storage/{user_id}/）
     storage_root: Path = REPO_ROOT / "storage"
 
-    # 计算执行模式：mock 使用固定路径版 Python Mock；dcr3d 使用用户根目录 DCR_3D.exe。
+    # 计算执行模式：mock 使用 Python Mock；formal 直接启动用户工作区内所选程序 exe。
     execution_mode: str = "mock"
 
-    # 正式程序统一模板目录，包含 DCR_3D.exe / libiomp5md.dll / program-manifest.json。
+    # 三个正式程序的统一模板根目录，每个子目录包含 exe、DLL、参数默认值和 manifest。
     fortran_program_template_dir: Path = REPO_ROOT / "program_template"
 
     # 兼容旧部署的命令模板；仅旧版测试/迁移期间使用，新执行链路不得在 dcr3d 模式调用。

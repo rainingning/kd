@@ -1,11 +1,11 @@
 {
   "program_key": "dcr_3d",
-  "version": "mock-trial-3.0.0",
+  "version": "formal-1.0.0",
   "exe": "DCR_3D.exe",
   "dll": "libiomp5md.dll",
-  "exe_sha256": "bf0bac72870e9faf556abbb73803d7d2c2a0a2fb53138192ede7c7ab470070be",
-  "dll_sha256": "6a783ef7b4aba2b2926ac11eb31fb6f4d63ed5cfc01c5b8680dc38a1d53a1bca",
+  "exe_sha256": "c7f708b5f90cea0b15b91affa648f6518ec12b8054b9632571268512ccd54108",
+  "dll_sha256": "6ca701e8ec7edf48fc51e1ec0ee7522dcbeacba9d3a10f001c6da27c526e71c5",
   "parameter_sha256": {
-    "model_DC.dat": "dbcb64cf2e56121fa77524730348530f3a30f94c2bf27de08122ed164c8d210f"
+    "model_DC.dat": "69aaf3867de9d40210780dc66994286c50a64c5879e949143b48f0adb71aa5ee"
   }
 }
